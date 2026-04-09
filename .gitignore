@@ -1,0 +1,15 @@
+﻿# Build artifacts
+out/
+*.exe
+*.dll
+*.lib
+*.pdb
+
+# IDE
+.vs/
+.vscode/
+*.user
+
+# Temporary
+*.tmp
+*.log
