@@ -1,3 +1,6 @@
 [submodule "llama.cpp"]
 	path = llama.cpp
 	url = https://github.com/ggml-org/llama.cpp.git
+[submodule "llama-manager/nLogger"]
+	path = llama-manager/nLogger
+	url = https://github.com/herrbasan/nLogger.git
