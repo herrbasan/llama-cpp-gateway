@@ -1,5 +1,7 @@
 ﻿# Build artifacts
 out/
+dist/
+installers/
 *.exe
 *.dll
 *.lib
@@ -13,3 +15,6 @@ out/
 # Temporary
 *.tmp
 *.log
+
+# Folders
+_Archive/
