@@ -1,8 +1,11 @@
-const http = require('node:http');
-const config = require('./config');
-const Logger = require('./nLogger/index.js'); // Custom git submodule logger
+import http from 'node:http';
+import path from 'node:path';
+import config from './config.js';
+import { createLogger } from './nLogger/src/logger.js'; 
+import { spawnLlamaServer, killLlamaServer, getStatus } from './process.js';
+import { discoverModels } from './models.js';
 
-const log = new Logger('LlamaManager');
+const log = createLogger();
 
 // A barebones JSON body parser
 function readJsonBody(req) {
@@ -40,20 +43,52 @@ const server = http.createServer(async (req, res) => {
   try {
     // Phase 2 implementation placeholders
     if (req.method === 'GET' && req.url === '/models') {
-      return sendJson(res, 200, { message: "Not implemented yet", models: [] });
+      const modelsList = await discoverModels();
+      return sendJson(res, 200, { data: modelsList });
     }
 
     if (req.method === 'POST' && req.url === '/start') {
       const body = await readJsonBody(req);
-      return sendJson(res, 200, { message: "Not implemented yet", request: body });
+      const status = getStatus();
+      if (status.pid) {
+          return sendJson(res, 409, { error: 'Conflict: Server already running' });
+      }
+
+      if (!body.modelPath) {
+          return sendJson(res, 400, { error: 'Bad Request: modelPath is required' });
+      }
+
+      const port = body.port || config.serverPort;
+      const absoluteModelPath = path.resolve(config.modelsDir, body.modelPath);
+
+      const args = [
+          '-m', absoluteModelPath,
+          '--port', port.toString(),
+      ];
+
+      if (body.ctxSize) args.push('-c', body.ctxSize.toString());
+      if (body.gpuLayers) args.push('-ngl', body.gpuLayers.toString());
+      if (body.mmprojPath) {
+          const absoluteVlmPath = path.resolve(config.modelsDir, body.mmprojPath);
+          args.push('--mmproj', absoluteVlmPath);
+      }
+
+      try {
+          const pid = spawnLlamaServer(args, port);
+          return sendJson(res, 200, { message: "Server started", pid, args });
+      } catch(err) {
+          return sendJson(res, 400, { error: 'Failed to start server', message: err.message });
+      }
     }
 
     if (req.method === 'POST' && req.url === '/stop') {
-      return sendJson(res, 200, { message: "Not implemented yet" });
+      const pidBefore = getStatus().pid;
+      killLlamaServer();
+      return sendJson(res, 200, { message: "Server stopped", previousPid: pidBefore });
     }
 
     if (req.method === 'GET' && req.url === '/status') {
-      return sendJson(res, 200, { state: 'idle', pid: null, metrics: {} });
+      return sendJson(res, 200, getStatus());
     }
 
     // Fallback for unknown routes
@@ -72,7 +107,8 @@ server.listen(config.port, '127.0.0.1', () => {
 // Guaranteed Disposal Hooks (Phase 1.3 Placeholder)
 function gracefulShutdown(signal) {
   log.info(`Received ${signal}, shutting down manager...`);
-  // TODO: Add strict process kill logic here for Phase 1.3
+  // Add strict process kill logic here for Phase 1.3
+  killLlamaServer();
   server.close(() => {
     process.exit(0);
   });
@@ -80,6 +116,7 @@ function gracefulShutdown(signal) {
 
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('exit', () => killLlamaServer());
 process.on('uncaughtException', (err) => {
   log.error(`Uncaught Exception: ${err.message}`);
   gracefulShutdown('uncaughtException');

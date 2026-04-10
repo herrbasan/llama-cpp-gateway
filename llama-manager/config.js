@@ -1,7 +1,11 @@
-const path = require('node:path');
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Configuration for Llama Manager
-module.exports = {
+export default {
   // Port the manager listens on
   port: parseInt(process.env.MANAGER_PORT || '8080', 10),
   
@@ -12,5 +16,5 @@ module.exports = {
   llamaServerPath: process.env.LLAMA_SERVER_PATH || path.resolve(__dirname, '../dist/universal/llama-server.exe'),
   
   // Default models directory. Set to match LM Studio's structure.
-  modelsDir: process.env.MODELS_DIR || 'E:\\LM Studio Models'
+  modelsDir: process.env.MODELS_DIR || 'D:\\# AI Stuff\\LMStudio_Models'
 };
