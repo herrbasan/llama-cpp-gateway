@@ -27,8 +27,8 @@ A zero-dependency, Vanilla JS (Node.js) microservice acting as a thin control pl
 - **Core Principle**: Zero external dependencies, with the single exception of the custom `nLogger` library (via git submodule) to maintain standardized log trails across the system.
 - **Components**:
   - **Logger** (`nLogger`): Dedicated logging library (git submodule) to capture runtime events and stream outputs reliably during operations and testing.
-  - **Control API Server** (`node:http`): Handles incoming JSON requests from the overarching LLM Gateway on port `8080`.
-  - **Process Supervisor** (`node:child_process`): Spawns `llama-server.exe` (configurable to port `8081`), tracks its PID, and exclusively maps arguments.
+  - **Control API Server** (`node:http`): Handles incoming JSON requests from the overarching LLM Gateway on port `4080`.
+  - **Process Supervisor** (`node:child_process`): Spawns `llama-server.exe` (configurable to port `4081`), tracks its PID, and exclusively maps arguments.
   - **Telemetry Poller**: Periodically hits `llama-server.exe` native `/metrics` and `/health` endpoints to report status.
 
 ## 3. Strict Operating Rules (Deterministic Mind)
@@ -43,7 +43,7 @@ A zero-dependency, Vanilla JS (Node.js) microservice acting as a thin control pl
 - **Returns**: JSON array of available models.
 
 ### 4.2. `POST /start`
-- **Accepts**: JSON body with `modelPath` (required), optional `mmprojPath` (for Vision/Multimodal support), and CLI overrides (`ctxSize`, `gpuLayers`, `port` default 8081, etc.).
+- **Accepts**: JSON body with `modelPath` (required), optional `mmprojPath` (for Vision/Multimodal support), and CLI overrides (`ctxSize`, `gpuLayers`, `port` default 4081, etc.).
 - **Behavior**: Validates model file existence. Spawns `llama-server.exe` with standard args and `--mmproj` if vision is requested. Polls `/health` until ready, then sets state to `running`.
 - **Returns**: 200 OK or 400/409 error.
 
@@ -59,5 +59,5 @@ A zero-dependency, Vanilla JS (Node.js) microservice acting as a thin control pl
   - `metrics`: Forwarded Prometheus metrics/stats from the running `llama-server.exe`.
 
 ## 5. Security Context
-- Binds locally (e.g., `127.0.0.1:8080`) so only the trusted LLM Gateway running alongside it on the LAN or localhost can mandate hardware execution.
+- Binds locally (e.g., `127.0.0.1:4080`) so only the trusted LLM Gateway running alongside it on the LAN or localhost can mandate hardware execution.
 

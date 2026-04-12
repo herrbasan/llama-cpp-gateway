@@ -1,11 +1,11 @@
-﻿# Build artifacts
-out/
+# Build artifacts (output directories)
 dist/
-installers/
-*.exe
-*.dll
-*.lib
-*.pdb
+
+# Runtime
+logs/
+
+# Dependencies
+node_modules/
 
 # IDE
 .vs/
@@ -18,3 +18,5 @@ installers/
 
 # Folders
 _Archive/
+.Kilo/
+out/

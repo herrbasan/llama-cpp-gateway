@@ -9,6 +9,7 @@ let currentState = 'idle'; // idle, starting, running, error
 let currentMetrics = {};
 let currentPort = null;
 let pollerInterval = null;
+let isDetached = false; // true if we detached on shutdown, don't kill on exit
 
 function stopPolling() {
     if (pollerInterval) {
@@ -18,7 +19,7 @@ function stopPolling() {
 }
 
 async function pollHealthAndMetrics() {
-    if (!activeProcess) return stopPolling();
+    if (!activeProcess && !isDetached) return stopPolling();
 
     const baseUrl = `http://127.0.0.1:${currentPort}`;
 
@@ -51,6 +52,40 @@ async function pollHealthAndMetrics() {
     }
 }
 
+async function checkExistingServer(port = config.serverPort) {
+    // Probe the health endpoint to see if a server is already running
+    try {
+        const res = await fetch(`http://127.0.0.1:${port}/health`, { timeout: 2000 });
+        if (res.ok) {
+            const data = await res.json();
+            if (data.status === 'ok') {
+                log.info(`Found existing llama-server on port ${port}`);
+                return true;
+            }
+        }
+    } catch (err) {
+        // No server running
+    }
+    return false;
+}
+
+function attachToServer(port) {
+    // Attach to an existing server process (we don't have the PID but we know it's there)
+    log.info(`Attaching to existing llama-server on port ${port}`);
+    
+    currentPort = port;
+    currentState = 'running'; // Assume running since health check passed
+    currentMetrics = {};
+    activeProcess = { pid: 'unknown', detached: true }; // Placeholder, no actual process handle
+    isDetached = true;
+    
+    // Start poller to monitor it
+    stopPolling();
+    pollerInterval = setInterval(pollHealthAndMetrics, 2000);
+    
+    return 'unknown';
+}
+
 function spawnLlamaServer(args, port) {
     if (activeProcess) {
         log.warn('Attempted to start server but it is already running. Fail fast.');
@@ -62,6 +97,7 @@ function spawnLlamaServer(args, port) {
     currentPort = port;
     currentState = 'starting';
     currentMetrics = {};
+    isDetached = false;
     
     activeProcess = spawn(config.llamaServerPath, args, {
         cwd: process.cwd(),
@@ -98,8 +134,29 @@ function spawnLlamaServer(args, port) {
     return activeProcess.pid;
 }
 
-function killLlamaServer() {
+function killLlamaServer(options = {}) {
+    const { force = false } = options;
+    
+    // If detached mode is enabled and not force-kill, just detach
+    if (!force && config.detachOnShutdown && !isDetached) {
+        log.info('DETACH_ON_SHUTDOWN enabled. Detaching from llama-server without killing.');
+        isDetached = true;
+        // Stop polling but keep state as running
+        stopPolling();
+        // Note: We keep activeProcess reference so getStatus() still reports running
+        return true;
+    }
+    
     if (!activeProcess) {
+        return true;
+    }
+
+    // If we're attached to a detached process (no real handle), just clear state
+    if (isDetached && activeProcess.detached) {
+        log.info('Clearing detached server state');
+        activeProcess = null;
+        currentState = 'idle';
+        stopPolling();
         return true;
     }
 
@@ -109,6 +166,7 @@ function killLlamaServer() {
     activeProcess.kill('SIGINT');
     activeProcess = null;
     currentState = 'idle';
+    isDetached = false;
     stopPolling();
     return true;
 }
@@ -117,12 +175,15 @@ function getStatus() {
     return {
         state: currentState,
         pid: activeProcess ? activeProcess.pid : null,
-        metrics: currentMetrics
+        metrics: currentMetrics,
+        detached: isDetached
     };
 }
 
 export {
     spawnLlamaServer,
     killLlamaServer,
-    getStatus
+    getStatus,
+    checkExistingServer,
+    attachToServer
 };

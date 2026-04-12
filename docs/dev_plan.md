@@ -35,7 +35,7 @@
 
 ## Phase 3: Telemetry & Monitoring
 *Reference: Spec Section 4.4 (GET /status)*
-- [x] **3.1 HTTP Poller**: Create an internal interval that hits `http://127.0.0.1:8081/metrics` when the server is `running`.
+- [x] **3.1 HTTP Poller**: Create an internal interval that hits `http://127.0.0.1:4081/metrics` when the server is `running`.
 - [x] **3.2 Server Health Check**: Ensure `/health` returns `{"status": "ok"}` before transitioning `/start` from `starting` to `running`.
 
 ## Phase 4: Local Testing

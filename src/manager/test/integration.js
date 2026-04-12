@@ -46,7 +46,7 @@ async function runTests() {
   const server = spawn('node', ['server.js'], { 
       cwd: process.cwd(), 
       detached: false,
-      env: { ...process.env, MANAGER_PORT: SERVER_PORT, LLAMA_SERVER_PORT: 8086 }
+      env: { ...process.env, MANAGER_PORT: SERVER_PORT, LLAMA_SERVER_PORT: 4081 }
   });
   server.stdout.on('data', d => console.log('MANAGER STDOUT:', d.toString().trim()));
   server.stderr.on('data', d => console.error('MANAGER STDERR:', d.toString().trim()));
