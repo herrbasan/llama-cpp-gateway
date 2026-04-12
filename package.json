@@ -1,0 +1,5 @@
+{
+  "name": "llama-cpp-gateway",
+  "type": "module",
+  "private": true
+}

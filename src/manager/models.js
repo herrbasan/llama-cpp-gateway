@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import config from './config.js';
-import { createLogger } from './nLogger/src/logger.js';
+import { createLogger } from './modules/nLogger/src/logger.js';
 
 const log = createLogger();
 
