@@ -4,3 +4,6 @@
 [submodule "llama-manager/nLogger"]
 	path = llama-manager/nLogger
 	url = https://github.com/herrbasan/nLogger.git
+[submodule "nui_wc2"]
+	path = nui_wc2
+	url = https://github.com/herrbasan/nui_wc2.git
