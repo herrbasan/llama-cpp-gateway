@@ -201,8 +201,10 @@ server.on('error', (err) => {
   }
 });
 
-server.listen(config.port, '127.0.0.1', async () => {
-  startup(`Llama Manager running at http://127.0.0.1:${config.port}`);
+server.listen(config.port, config.host, async () => {
+  const bindAddr = config.host === '0.0.0.0' ? '0.0.0.0 (all interfaces)' : config.host;
+  startup(`Llama Manager running at http://${config.host === '0.0.0.0' ? 'localhost' : config.host}:${config.port}`);
+  startup(`Binding to: ${bindAddr}`);
   startup(`Server binary: ${config.llamaServerPath}`);
   startup(`Models dir: ${config.modelsDir}`);
   startup(`Max concurrent instances: ${config.maxInstances}`);

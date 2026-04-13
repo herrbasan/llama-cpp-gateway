@@ -10,6 +10,7 @@ const configFile = path.join(projectRoot, 'config.json');
 const cfg = JSON.parse(fs.readFileSync(configFile, 'utf-8'));
 
 export default {
+  host: cfg.host || '127.0.0.1',
   port: cfg.port,
   serverPort: cfg.serverPort,
   maxInstances: cfg.maxInstances,
