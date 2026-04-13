@@ -8,8 +8,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 
 // ── Config ─────────────────────────────────────────────
-const MODELS_DIR = process.env.MODELS_DIR || 'D:\\# AI Stuff\\LMStudio_Models';
-const LLAMA_SERVER = process.env.LLAMA_SERVER_PATH || path.resolve(projectRoot, 'dist/universal/llama-server.exe');
+const configFile = path.resolve(projectRoot, 'config.json');
+const cfg = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+
+const MODELS_DIR = cfg.modelsDir;
+const LLAMA_SERVER = path.resolve(projectRoot, cfg.llamaServerPath);
 const SERVER_PORT = 4082; // Use a different port to avoid conflict with manager
 const TEST_PROMPT = `Write a comprehensive technical analysis of modern GPU computing architectures and their programming models. Cover the following topics in depth:
 
