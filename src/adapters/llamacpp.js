@@ -8,6 +8,9 @@
  */
 
 import { request as httpRequest } from '../utils/http.js';
+import { getLogger } from '../manager/modules/nLogger/src/logger.js';
+
+const logger = getLogger();
 
 function buildModelHeaders(modelConfig) {
     const li = modelConfig.localInference;
