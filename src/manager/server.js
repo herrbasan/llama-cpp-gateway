@@ -52,7 +52,7 @@ function extractModelConfig(req) {
 }
 
 function proxyToInstance(req, res, instance) {
-  const targetUrl = `http://127.0.0.1:${instance.port}${req.url}`;
+  const targetUrl = `http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${instance.port}${req.url}`;
 
   const headers = {
     'Content-Type': req.headers['content-type'] || 'application/json',
@@ -151,7 +151,7 @@ async function handleHealth(res) {
 
   const results = await Promise.all(running.map(async (inst) => {
     try {
-      const r = await fetch(`http://127.0.0.1:${inst.port}/health`, { timeout: 3000 });
+      const r = await fetch(`http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${inst.port}/health`, { timeout: 3000 });
       return { model: inst.modelPath, port: inst.port, healthy: r.ok };
     } catch {
       return { model: inst.modelPath, port: inst.port, healthy: false };

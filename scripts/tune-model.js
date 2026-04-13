@@ -13,7 +13,8 @@ const cfg = JSON.parse(fs.readFileSync(configFile, 'utf8'));
 
 const MODELS_DIR = cfg.modelsDir;
 const LLAMA_SERVER = path.resolve(projectRoot, cfg.llamaServerPath);
-const SERVER_PORT = 4082; // Use a different port to avoid conflict with manager
+const SERVER_PORT = cfg.serverPort + 1; // Use a different port to avoid conflict with manager
+const SERVER_HOST = cfg.host === '0.0.0.0' ? '127.0.0.1' : (cfg.host || '127.0.0.1');
 const TEST_PROMPT = `Write a comprehensive technical analysis of modern GPU computing architectures and their programming models. Cover the following topics in depth:
 
 1. **CUDA Ecosystem**: Discuss NVIDIA's CUDA platform, including its programming model, memory hierarchy, and optimization techniques. Cover shared memory, constant memory, texture memory, and how they impact performance. Discuss warp-level programming, cooperative groups, and tensor cores.
@@ -268,7 +269,7 @@ async function waitForHealth(maxRetries = 60) {
   for (let i = 0; i < maxRetries; i++) {
     process.stdout.write('.');
     try {
-      const res = await fetch(`http://127.0.0.1:${SERVER_PORT}/health`, { timeout: 2000 });
+      const res = await fetch(`http://${SERVER_HOST}:${SERVER_PORT}/health`, { timeout: 2000 });
       if (res.ok) {
         const data = await res.json();
         if (data.status === 'ok') {
@@ -286,7 +287,7 @@ async function waitForHealth(maxRetries = 60) {
 }
 
 async function runCompletion() {
-  const res = await fetch(`http://127.0.0.1:${SERVER_PORT}/completion`, {
+  const res = await fetch(`http://${SERVER_HOST}:${SERVER_PORT}/completion`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -312,7 +313,7 @@ async function runEmbedding(iterations = 100) {
 
   for (let i = 0; i < iterations; i++) {
     const start = Date.now();
-    const res = await fetch(`http://127.0.0.1:${SERVER_PORT}/embedding`, {
+    const res = await fetch(`http://${SERVER_HOST}:${SERVER_PORT}/embedding`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content: testText }),
@@ -337,7 +338,7 @@ async function runEmbeddingConcurrency(concurrency, iterations = 50) {
   async function worker() {
     for (let i = 0; i < iterations; i++) {
       const start = Date.now();
-      const res = await fetch(`http://127.0.0.1:${SERVER_PORT}/embedding`, {
+    const res = await fetch(`http://${SERVER_HOST}:${SERVER_PORT}/embedding`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: testText }),
@@ -384,7 +385,7 @@ async function runVisionTest(mmprojPath, iterations = 2) {
     };
     if (mmprojPath) body.mmproj = mmprojPath;
 
-    const res = await fetch(`http://127.0.0.1:${SERVER_PORT}/completion`, {
+  const res = await fetch(`http://${SERVER_HOST}:${SERVER_PORT}/completion`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),

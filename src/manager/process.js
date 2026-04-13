@@ -21,7 +21,8 @@ function stopPolling(instance) {
 }
 
 async function pollHealthAndMetrics(instance) {
-    const baseUrl = `http://127.0.0.1:${instance.port}`;
+    const host = config.host === '0.0.0.0' ? '127.0.0.1' : config.host;
+    const baseUrl = `http://${host}:${instance.port}`;
 
     if (instance.state === 'starting') {
         try {
@@ -51,7 +52,8 @@ async function pollHealthAndMetrics(instance) {
 
 async function checkExistingServer(port) {
     try {
-        const res = await fetch(`http://127.0.0.1:${port}/health`, { timeout: 2000 });
+        const host = config.host === '0.0.0.0' ? '127.0.0.1' : config.host;
+        const res = await fetch(`http://${host}:${port}/health`, { timeout: 2000 });
         if (res.ok) {
             const data = await res.json();
             if (data.status === 'ok') return true;
