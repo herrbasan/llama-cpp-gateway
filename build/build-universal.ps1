@@ -65,6 +65,20 @@ if (Test-Path "$BuildDir\bin\Release") {
 }
 $DistDir = "$ProjectRoot\dist\universal"
 
+# Ensure LFS binaries are downloaded (not just pointer files)
+if (Test-Path "$DistDir\llama-server.exe") {
+    $FirstLine = Get-Content "$DistDir\llama-server.exe" -TotalCount 1 -Raw
+    if ($FirstLine -match "version https://git-lfs") {
+        Write-Host "" -ForegroundColor Yellow
+        Write-Host "Git LFS binaries not downloaded. Running 'git lfs pull'..." -ForegroundColor Yellow
+        git lfs pull
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Failed to download LFS binaries. Check your LFS setup." -ForegroundColor Red
+            exit 1
+        }
+    }
+}
+
 # Check if llama-server.exe is currently running from dist folder
 $DistServerExe = "$DistDir\llama-server.exe"
 if (Test-Path $DistServerExe) {
