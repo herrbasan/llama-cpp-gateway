@@ -65,6 +65,21 @@ if (Test-Path "$BuildDir\bin\Release") {
 }
 $DistDir = "$ProjectRoot\dist\universal"
 
+# Check if llama-server.exe is currently running from dist folder
+$DistServerExe = "$DistDir\llama-server.exe"
+if (Test-Path $DistServerExe) {
+    $RunningProcesses = Get-Process -Name "llama-server" -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $DistServerExe }
+    if ($RunningProcesses) {
+        Write-Host "" -ForegroundColor Red
+        Write-Host "ERROR: llama-server.exe is currently running from dist\universal." -ForegroundColor Red
+        Write-Host "       The build cannot overwrite the file while it is in use." -ForegroundColor Yellow
+        Write-Host "" -ForegroundColor Red
+        Write-Host "       Please stop the server process and run this script again." -ForegroundColor Yellow
+        Write-Host "" -ForegroundColor Red
+        exit 1
+    }
+}
+
 Write-Host "Copying distribution to dist\universal..." -ForegroundColor Cyan
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 Copy-Item -Path "$SourceDir\*" -Destination $DistDir -Recurse -Force
