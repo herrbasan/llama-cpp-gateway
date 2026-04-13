@@ -1,6 +1,3 @@
-# Build artifacts (output directories)
-dist/
-
 # Runtime
 logs/
 
