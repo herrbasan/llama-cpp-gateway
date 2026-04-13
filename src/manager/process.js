@@ -74,12 +74,20 @@ function buildArgs(modelPath, options = {}) {
     const ctxSize = options.ctxSize ?? config.defaultCtxSize;
     const gpuLayers = options.gpuLayers ?? config.defaultGpuLayers;
     const flashAttention = options.flashAttention ?? config.flashAttention;
+    const parallelSlots = options.parallelSlots ?? config.defaultParallelSlots;
+    const kvUnified = options.kvUnified ?? config.defaultKvUnified;
+    const ctxCheckpoints = options.ctxCheckpoints ?? config.defaultCtxCheckpoints;
+    const checkpointEveryTokens = options.checkpointEveryTokens ?? config.defaultCheckpointEveryTokens;
 
     const args = [
         '-m', modelPath,
         '--port', port.toString(),
         '-c', ctxSize.toString(),
         '-ngl', gpuLayers.toString(),
+        '--parallel', parallelSlots.toString(),
+        kvUnified ? '--kv-unified' : '--no-kv-unified',
+        '--ctx-checkpoints', ctxCheckpoints.toString(),
+        '--checkpoint-every-n-tokens', checkpointEveryTokens.toString(),
     ];
 
     if (flashAttention) args.push('--flash-attn', 'on');

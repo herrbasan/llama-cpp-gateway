@@ -6,6 +6,10 @@
   "defaultCtxSize": 8192,
   "defaultGpuLayers": 99,
   "flashAttention": true,
+  "defaultParallelSlots": 1,
+  "defaultKvUnified": false,
+  "defaultCtxCheckpoints": 0,
+  "defaultCheckpointEveryTokens": -1,
   "detachOnShutdown": false,
   "modelsDir": "D:\\# AI Stuff\\LMStudio_Models"
 }

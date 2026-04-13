@@ -53,6 +53,20 @@ function extractModelConfig(req) {
 
 function proxyToInstance(req, res, instance) {
   const targetUrl = `http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${instance.port}${req.url}`;
+  let completed = false;
+
+  const finishWithError = (statusCode, payload, logMessage) => {
+    if (completed) return;
+    completed = true;
+    if (logMessage) log.error(logMessage);
+
+    if (!res.headersSent) {
+      sendJson(res, statusCode, payload);
+      return;
+    }
+
+    res.end();
+  };
 
   const headers = {
     'Content-Type': req.headers['content-type'] || 'application/json',
@@ -62,17 +76,32 @@ function proxyToInstance(req, res, instance) {
   if (req.headers['authorization']) headers['Authorization'] = req.headers['authorization'];
 
   const proxyReq = http.request(targetUrl, { method: req.method, headers }, (proxyRes) => {
+    if (completed) return;
     res.writeHead(proxyRes.statusCode, proxyRes.headers);
     proxyRes.on('data', (chunk) => res.write(chunk));
-    proxyRes.on('end', () => res.end());
+    proxyRes.on('end', () => {
+      if (completed) return;
+      completed = true;
+      res.end();
+    });
+    proxyRes.on('error', (err) => {
+      finishWithError(502, { error: 'Bad Gateway', details: err.message }, `Proxy response error (${instance.port}): ${err.message}`);
+    });
   });
 
   proxyReq.on('error', (err) => {
-    log.error(`Proxy error (${instance.port}): ${err.message}`);
-    if (!res.headersSent) {
-      sendJson(res, 502, { error: 'Bad Gateway', details: err.message });
-    } else {
-      res.end();
+    finishWithError(502, { error: 'Bad Gateway', details: err.message }, `Proxy error (${instance.port}): ${err.message}`);
+  });
+
+  req.on('aborted', () => {
+    completed = true;
+    proxyReq.destroy();
+  });
+
+  res.on('close', () => {
+    if (!completed) {
+      completed = true;
+      proxyReq.destroy();
     }
   });
 
