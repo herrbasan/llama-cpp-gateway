@@ -1,38 +1,23 @@
 # Build Scripts
 
-PowerShell scripts for building llama.cpp with different configurations.
+PowerShell scripts for building llama.cpp with CUDA and Vulkan support.
 
 ## Scripts
 
 | Script | Purpose | Output |
 |--------|---------|--------|
-| `build-cuda.ps1` | NVIDIA CUDA only | out/cuda/ |
-| `build-universal.ps1` | CUDA + Intel SYCL | out/universal/ |
-| `download-prerequisites.ps1` | Open download pages for toolkits | - |
+| `build-universal.ps1` | CUDA + Vulkan | `dist/universal/` |
 
 ## Usage
 
-### Download Prerequisites
-
 ```powershell
-# Open browser to download pages for CUDA and Intel oneAPI
-.\build-scripts\download-prerequisites.ps1
+.\build\build-universal.ps1
 ```
 
-### Build
-
-```powershell
-# CUDA-only build (requires CUDA Toolkit)
-.\build-scripts\build-cuda.ps1
-
-# Universal build (requires CUDA + Intel oneAPI)
-.\build-scripts\build-universal.ps1
-```
+The script updates the `llama.cpp` submodule, configures CMake with CUDA and Vulkan, builds with Ninja, and copies the full distribution to `dist/universal/`.
 
 ## Requirements
 
-See main README.md for full prerequisites.
-
-## Installer Storage
-
-Downloaded installers should be placed in `installers/` (gitignored).
+- **NVIDIA CUDA Toolkit 12.2+**
+- **LunarG Vulkan SDK**
+- **Visual Studio 2022** with C++ workload

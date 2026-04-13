@@ -11,6 +11,10 @@ $RepoRoot = Join-Path $ProjectRoot "llama.cpp"
 Write-Host "Building llama.cpp with CUDA + Vulkan support..." -ForegroundColor Green
 Write-Host "Build directory: $BuildDir"
 
+# Update llama.cpp submodule
+Write-Host "Updating llama.cpp submodule..." -ForegroundColor Cyan
+git submodule update --init --recursive
+
 # Check prerequisites
 if (-not (Get-Command nvcc -ErrorAction SilentlyContinue)) {
     Write-Warning "CUDA wrapper nvcc not found in PATH. Ensure CUDA Toolkit is installed."
