@@ -54,39 +54,17 @@ Write-Host "Compiling binaries..."
 cmd /c $BuildCmd
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-# Minimal distribution (essential files only)
+# Copy to dist folder
 $SourceDir = "$BuildDir\bin"
 if (Test-Path "$BuildDir\bin\Release") {
     $SourceDir = "$BuildDir\bin\Release"
 }
-$DistDirMinimal = "$ProjectRoot\dist\universal"
+$DistDir = "$ProjectRoot\dist\universal"
 
-Write-Host "Copying minimal distribution to dist\universal..." -ForegroundColor Cyan
-New-Item -ItemType Directory -Force -Path $DistDirMinimal | Out-Null
-$EssentialFiles = @(
-    "llama-cli.exe",
-    "llama-server.exe",
-    "llama-bench.exe",
-    "ggml-base.dll",
-    "ggml-cpu.dll",
-    "ggml-cuda.dll",
-    "ggml-vulkan.dll",
-    "ggml-rpc.dll",
-    "ggml-sycl.dll",
-    "ggml.dll",
-    "llama.dll",
-    "mtmd.dll"
-)
-foreach ($file in $EssentialFiles) {
-    $src = Join-Path $SourceDir $file
-    if (Test-Path $src) {
-        Copy-Item $src $DistDirMinimal -Force
-    }
-}
+Write-Host "Copying distribution to dist\universal..." -ForegroundColor Cyan
+New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
+Copy-Item -Path "$SourceDir\*" -Destination $DistDir -Recurse -Force
 
 Write-Host "Universal CUDA + Vulkan build complete without Intel icx runtime dependencies!" -ForegroundColor Green
-
-Write-Host "Build complete!" -ForegroundColor Green
-Write-Host "  Build artifacts: $BuildDir\bin\$BuildType" -ForegroundColor Gray
-Write-Host "  Full dist:       $DistDirFull" -ForegroundColor Gray
-Write-Host "  Minimal dist:    $DistDirMinimal" -ForegroundColor Gray
+Write-Host "  Build artifacts: $BuildDir\bin\Release" -ForegroundColor Gray
+Write-Host "  Distribution:    $DistDir" -ForegroundColor Gray

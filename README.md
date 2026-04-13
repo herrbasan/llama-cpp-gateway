@@ -1,6 +1,6 @@
 # LLaMA.cpp Gateway
 
-Production-ready wrapper around llama.cpp: reproducible builds with CUDA/Vulkan/SYCL support, plus a zero-dependency Node.js management layer that acts as a self-managing LLM endpoint. Send inference requests with model config in headers — the manager loads, swaps, and proxies automatically.
+Production-ready wrapper around llama.cpp: reproducible CUDA + Vulkan builds, plus a zero-dependency Node.js management layer that acts as a self-managing LLM endpoint. Send inference requests with model config in headers — the manager loads, swaps, and proxies automatically.
 
 ---
 
@@ -16,12 +16,7 @@ Production-ready wrapper around llama.cpp: reproducible builds with CUDA/Vulkan/
 ### Build
 
 ```powershell
-# Universal build (CUDA + Vulkan)
 .\build\build-universal.ps1
-
-# Or CUDA-only / Vulkan-only
-.\build\build-cuda.ps1
-.\build\build-vulkan.ps1
 ```
 
 ### Start the Manager
