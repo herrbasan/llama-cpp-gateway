@@ -1,5 +1,9 @@
 {
   "name": "llama-cpp-gateway",
   "type": "module",
-  "private": true
+  "private": true,
+  "scripts": {
+    "start": "node src/manager/server.js",
+    "tune": "node scripts/tune-model.js"
+  }
 }

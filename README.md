@@ -133,7 +133,23 @@ idle ──(inference with X-Model-Path)──► starting ──(health OK)─�
 
 ## Configuration
 
-All settings via `src/manager/config.js` (global defaults only).
+All settings via `config.json` at the project root. Environment variables override file values.
+
+### config.json
+
+```json
+{
+  "port": 4080,
+  "serverPort": 4081,
+  "maxInstances": 4,
+  "llamaServerPath": "dist/universal/llama-server.exe",
+  "defaultCtxSize": 8192,
+  "defaultGpuLayers": 99,
+  "flashAttention": true,
+  "detachOnShutdown": false,
+  "modelsDir": "D:\\# AI Stuff\\LMStudio_Models"
+}
+```
 
 ### Model Config Headers
 
@@ -150,31 +166,6 @@ The Gateway sends these headers with every inference request:
 | `X-Model-Pooling` | No | Pooling strategy (`mean`, `cls`, etc.) |
 | `X-Model-BatchSize` | No | Batch size for embeddings |
 | `X-Model-Mlock` | No | `true` to lock model in RAM |
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MANAGER_PORT` | `4080` | Manager API port |
-| `LLAMA_SERVER_PATH` | `../../dist/universal/llama-server.exe` | Binary path (relative to `src/manager/`) |
-| `MODELS_DIR` | `D:\# AI Stuff\LMStudio_Models` | GGUF models directory (for `/models` scanning) |
-| `DEFAULT_CTX_SIZE` | `8192` | Default context window (overridden by header) |
-| `DEFAULT_GPU_LAYERS` | `99` | Default GPU offload layers (overridden by header) |
-| `FLASH_ATTENTION` | `true` | Enable Flash Attention by default |
-| `DETACH_ON_SHUTDOWN` | `false` | Keep model in VRAM on manager restart |
-
-### Common Scenarios
-
-```powershell
-# Custom model directory
-$env:MODELS_DIR = "E:\AI\Models"
-
-# Port conflict
-$env:MANAGER_PORT = 8180
-
-# Keep model loaded across manager restarts
-$env:DETACH_ON_SHUTDOWN = "true"
-```
 
 ---
 
@@ -483,20 +474,14 @@ Progress is included in each SSE event:
 
 ```
 llama-cpp-gateway/
+├── config.json           # Manager settings (ports, paths, defaults)
 ├── src/manager/          # Node.js management layer
 │   ├── server.js         # HTTP API, header-driven model resolution, proxy
-│   ├── process.js        # Process supervisor, model lifecycle
+│   ├── process.js        # Process supervisor, model lifecycle, state.json
 │   ├── models.js         # Model discovery & GGUF parser
-│   ├── config.js         # Global defaults (no model registry)
+│   ├── config.js         # Reads config.json + env overrides
 │   ├── modules/nLogger/  # Logging (git submodule)
 │   └── test/             # Integration tests
-├── build/                # Build scripts
-├── scripts/              # CLI tools (tune-model.js)
-├── dist/                 # Compiled binaries (gitignored)
-├── llama.cpp/            # Upstream submodule
-├── docs/                 # Documentation
-├── _Archive/             # Obsolete files
-└── logs/                 # Runtime logs (gitignored)
 ```
 
 ---

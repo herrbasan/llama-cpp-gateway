@@ -1,0 +1,11 @@
+{
+  "port": 4080,
+  "serverPort": 4081,
+  "maxInstances": 4,
+  "llamaServerPath": "dist/universal/llama-server.exe",
+  "defaultCtxSize": 8192,
+  "defaultGpuLayers": 99,
+  "flashAttention": true,
+  "detachOnShutdown": false,
+  "modelsDir": "D:\\# AI Stuff\\LMStudio_Models"
+}
