@@ -1,13 +1,17 @@
 import http from 'node:http';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import config from './config.js';
 import { createLogger } from './modules/nLogger/src/logger.js';
-import { spawnLlamaServer, killLlamaServer, getStatus, checkExistingServer, attachToServer } from './process.js';
+import {
+  ensureModel,
+  killInstance,
+  killAll,
+  getInstance,
+  getAllInstances,
+  restoreState,
+} from './process.js';
 import { discoverModels } from './models.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const log = createLogger({ logsDir: path.resolve(__dirname, '../../logs') });
+const log = createLogger();
 
 function startup(msg) {
   console.log(msg);
@@ -20,90 +24,144 @@ function fatal(msg) {
   process.exit(1);
 }
 
-// A barebones JSON body parser
-function readJsonBody(req) {
-  return new Promise((resolve, reject) => {
-    let body = '';
-    req.on('data', chunk => {
-      body += chunk.toString();
-    });
-    req.on('end', () => {
-      if (!body) return resolve({});
-      try {
-        resolve(JSON.parse(body));
-      } catch (err) {
-        log.error(`Failed to parse JSON body: ${err.message}`);
-        reject(err);
-      }
-    });
-    req.on('error', err => {
-      log.error(`Request stream error: ${err.message}`);
-      reject(err);
-    });
-  });
-}
-
-// Send standard JSON response
 function sendJson(res, statusCode, data) {
   res.writeHead(statusCode, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
 }
 
-// Check for existing server on startup (if detachOnShutdown was used)
-async function attemptReattach() {
-  if (await checkExistingServer(config.serverPort)) {
-    log.info('Re-attaching to existing llama-server (DETACH_ON_SHUTDOWN was used)');
-    attachToServer(config.serverPort);
-  }
+function extractModelConfig(req) {
+  const modelPath = req.headers['x-model-path'];
+  if (!modelPath) return null;
+
+  const parseHeaderInt = (h) => {
+    const v = parseInt(req.headers[h], 10);
+    return Number.isNaN(v) ? undefined : v;
+  };
+
+  return {
+    modelPath,
+    ctxSize: parseHeaderInt('x-model-ctxsize'),
+    gpuLayers: parseHeaderInt('x-model-gpulayers'),
+    flashAttention: req.headers['x-model-flashattention'] ? req.headers['x-model-flashattention'] === 'true' : undefined,
+    mmproj: req.headers['x-model-mmproj'] || undefined,
+    embedding: req.headers['x-model-embedding'] === 'true',
+    pooling: req.headers['x-model-pooling'] || undefined,
+    batchSize: parseHeaderInt('x-model-batchsize'),
+    mlock: req.headers['x-model-mlock'] === 'true',
+  };
 }
 
-// Proxy SSE/streaming requests to llama-server with zero transformation
-function proxyToLlamaServer(req, res, body) {
-  const targetUrl = `http://127.0.0.1:${config.serverPort}${req.url}`;
-  
+function proxyToInstance(req, res, instance) {
+  const targetUrl = `http://127.0.0.1:${instance.port}${req.url}`;
+
   const headers = {
     'Content-Type': req.headers['content-type'] || 'application/json',
-    'Accept': req.headers['accept'] || '*/*',
+    Accept: req.headers['accept'] || '*/*',
   };
-  
-  if (req.headers['authorization']) {
-    headers['Authorization'] = req.headers['authorization'];
-  }
-  
-  const proxyReq = http.request(targetUrl, {
-    method: req.method,
-    headers,
-  }, (proxyRes) => {
-    // Forward status and headers
+
+  if (req.headers['authorization']) headers['Authorization'] = req.headers['authorization'];
+
+  const proxyReq = http.request(targetUrl, { method: req.method, headers }, (proxyRes) => {
     res.writeHead(proxyRes.statusCode, proxyRes.headers);
-    
-    // Pipe response chunks directly - SSE streams flow through unchanged
-    proxyRes.on('data', (chunk) => {
-      res.write(chunk);
-    });
-    
-    proxyRes.on('end', () => {
-      res.end();
-    });
+    proxyRes.on('data', (chunk) => res.write(chunk));
+    proxyRes.on('end', () => res.end());
   });
-  
+
   proxyReq.on('error', (err) => {
-    log.error(`Proxy error: ${err.message}`);
+    log.error(`Proxy error (${instance.port}): ${err.message}`);
     if (!res.headersSent) {
       sendJson(res, 502, { error: 'Bad Gateway', details: err.message });
     } else {
       res.end();
     }
   });
-  
-  // Forward request body if present
-  if (body !== undefined) {
-    proxyReq.write(JSON.stringify(body));
-  }
-  proxyReq.end();
+
+  req.pipe(proxyReq);
 }
 
-// Scaffold the HTTP Server
+async function handleInference(req, res) {
+  const modelConfig = extractModelConfig(req);
+
+  if (!modelConfig) {
+    return sendJson(res, 400, {
+      error: 'Bad Request',
+      details: 'Missing X-Model-Path header. The Gateway must send model config via headers.',
+    });
+  }
+
+  const existing = getInstance(modelConfig.modelPath);
+  if (existing && existing.state === 'running') {
+    return proxyToInstance(req, res, existing);
+  }
+
+  try {
+    const result = await ensureModel(modelConfig.modelPath, {
+      ctxSize: modelConfig.ctxSize ?? config.defaultCtxSize,
+      gpuLayers: modelConfig.gpuLayers ?? config.defaultGpuLayers,
+      flashAttention: modelConfig.flashAttention ?? config.flashAttention,
+      mmprojPath: modelConfig.mmproj,
+      embedding: modelConfig.embedding,
+      pooling: modelConfig.pooling,
+      batchSize: modelConfig.batchSize,
+      mlock: modelConfig.mlock,
+    });
+
+    if (!result.alreadyRunning) {
+      log.info(`Waiting for model to load: ${modelConfig.modelPath}...`);
+      const maxWait = 120_000;
+      const pollMs = 1000;
+      const start = Date.now();
+      while (Date.now() - start < maxWait) {
+        await new Promise((r) => setTimeout(r, pollMs));
+        const inst = getInstance(modelConfig.modelPath);
+        if (inst && inst.state === 'running') break;
+        if (inst && inst.state === 'error') {
+          return sendJson(res, 500, {
+            error: 'Model failed to start',
+            details: 'llama-server exited with an error',
+          });
+        }
+      }
+      const inst = getInstance(modelConfig.modelPath);
+      if (!inst || inst.state !== 'running') {
+        return sendJson(res, 504, {
+          error: 'Model startup timeout',
+          details: `Model did not become healthy within ${maxWait / 1000}s`,
+        });
+      }
+      log.info(`Model ready: ${modelConfig.modelPath}`);
+      return proxyToInstance(req, res, inst);
+    }
+
+    return proxyToInstance(req, res, existing);
+  } catch (err) {
+    return sendJson(res, 500, {
+      error: 'Failed to start model',
+      details: err.message,
+    });
+  }
+}
+
+async function handleHealth(res) {
+  const instances = getAllInstances();
+  const running = instances.filter(i => i.state === 'running');
+  if (running.length === 0) {
+    return sendJson(res, 503, { status: 'error', message: 'No models loaded' });
+  }
+
+  const results = await Promise.all(running.map(async (inst) => {
+    try {
+      const r = await fetch(`http://127.0.0.1:${inst.port}/health`, { timeout: 3000 });
+      return { model: inst.modelPath, port: inst.port, healthy: r.ok };
+    } catch {
+      return { model: inst.modelPath, port: inst.port, healthy: false };
+    }
+  }));
+
+  const allHealthy = results.every(r => r.healthy);
+  return sendJson(res, allHealthy ? 200 : 503, { status: allHealthy ? 'ok' : 'degraded', models: results });
+}
+
 const server = http.createServer(async (req, res) => {
   log.info(`${req.method} ${req.url}`);
 
@@ -113,82 +171,23 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { data: modelsList });
     }
 
-    if (req.method === 'POST' && req.url === '/start') {
-      const body = await readJsonBody(req);
-      const status = getStatus();
-      
-      // If detached, we can re-attach or spawn new
-      // If actually running with process handle, reject
-      if (status.pid && !status.detached) {
-          return sendJson(res, 409, { error: 'Conflict: Server already running' });
-      }
-      
-      // Check if actually running (health probe)
-      if (status.detached && await checkExistingServer(body.port || config.serverPort)) {
-        return sendJson(res, 409, { error: 'Conflict: Server already running (detached)' });
-      }
-
-      if (!body.modelPath) {
-          return sendJson(res, 400, { error: 'Bad Request: modelPath is required' });
-      }
-
-      const port = body.port || config.serverPort;
-      const absoluteModelPath = path.resolve(config.modelsDir, body.modelPath);
-
-      // Use explicit params or fall back to config defaults
-      const ctxSize = body.ctxSize ?? config.defaultCtxSize;
-      const gpuLayers = body.gpuLayers ?? config.defaultGpuLayers;
-      const flashAttention = body.flashAttention ?? config.flashAttention;
-
-      const args = [
-          '-m', absoluteModelPath,
-          '--port', port.toString(),
-          '-c', ctxSize.toString(),
-          '-ngl', gpuLayers.toString(),
-      ];
-
-      if (flashAttention) {
-        args.push('--flash-attn', 'on');
-      }
-      
-      if (body.mmprojPath) {
-          const absoluteVlmPath = path.resolve(config.modelsDir, body.mmprojPath);
-          args.push('--mmproj', absoluteVlmPath);
-      }
-
-      try {
-          const pid = spawnLlamaServer(args, port);
-          return sendJson(res, 200, {
-            message: "Server started",
-            pid,
-            args,
-            settings: { ctxSize, gpuLayers, flashAttention }
-          });
-      } catch(err) {
-          return sendJson(res, 400, { error: 'Failed to start server', message: err.message });
-      }
-    }
-
-    if (req.method === 'POST' && req.url === '/stop') {
-      const body = await readJsonBody(req);
-      const pidBefore = getStatus().pid;
-      const force = body.force === true;
-      
-      killLlamaServer({ force });
-      return sendJson(res, 200, { 
-        message: force ? "Server force-killed" : "Server stopped", 
-        previousPid: pidBefore,
-        detached: !force && config.detachOnShutdown
-      });
+    if (req.method === 'GET' && req.url === '/health') {
+      return handleHealth(res);
     }
 
     if (req.method === 'GET' && req.url === '/status') {
-      return sendJson(res, 200, getStatus());
+      return sendJson(res, 200, {
+        instances: getAllInstances(),
+      });
     }
 
-    // Proxy all other requests to llama-server (SSE streaming, completions, embeddings, etc.)
-    const body = req.method === 'POST' ? await readJsonBody(req) : undefined;
-    return proxyToLlamaServer(req, res, body);
+    if (req.method === 'POST' && req.url === '/stop') {
+      killAll({ force: true });
+      return sendJson(res, 200, { message: 'All models stopped' });
+    }
+
+    // All other requests are inference — read headers, auto-start model, proxy body raw
+    return handleInference(req, res);
   } catch (err) {
     sendJson(res, 400, { error: 'Bad Request', details: err.message });
   }
@@ -196,7 +195,7 @@ const server = http.createServer(async (req, res) => {
 
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
-    fatal(`Port ${config.port} is already in use. Is another instance running?`);
+    fatal(`Port ${config.port} is already in use.`);
   } else {
     fatal(`Server error: ${err.message}`);
   }
@@ -204,37 +203,24 @@ server.on('error', (err) => {
 
 server.listen(config.port, '127.0.0.1', async () => {
   startup(`Llama Manager running at http://127.0.0.1:${config.port}`);
+  startup(`Server binary: ${config.llamaServerPath}`);
   startup(`Models dir: ${config.modelsDir}`);
-  startup(`Server target: ${config.llamaServerPath}`);
-  
-  if (config.detachOnShutdown) {
-    startup('DETACH_ON_SHUTDOWN enabled. Will preserve model in VRAM on restart.');
-    await attemptReattach();
-  }
+  startup(`Max concurrent instances: ${config.maxInstances}`);
+
+  await restoreState();
 });
 
-// Graceful shutdown
 function gracefulShutdown(signal) {
-  startup(`Received ${signal}, shutting down manager...`);
-  
-  if (config.detachOnShutdown) {
-    log.info('DETACH_ON_SHUTDOWN enabled. Detaching from server without killing.');
-  }
-  
-  killLlamaServer();
-  server.close(() => {
-    process.exit(0);
-  });
+  startup(`Received ${signal}, shutting down...`);
+  if (!config.detachOnShutdown) killAll();
+  server.close(() => process.exit(0));
 }
 
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
-// Only kill on exit if not detaching
 process.on('exit', () => {
-  if (!config.detachOnShutdown) {
-    killLlamaServer();
-  }
+  if (!config.detachOnShutdown) killAll();
 });
 
 process.on('uncaughtException', (err) => {

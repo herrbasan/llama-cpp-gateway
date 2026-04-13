@@ -1,6 +1,6 @@
 # LLaMA.cpp Gateway
 
-Production-ready wrapper around llama.cpp: reproducible builds with CUDA/Vulkan/SYCL support, plus a zero-dependency Node.js management layer with transparent SSE streaming proxy for process control and inference.
+Production-ready wrapper around llama.cpp: reproducible builds with CUDA/Vulkan/SYCL support, plus a zero-dependency Node.js management layer that acts as a self-managing LLM endpoint. Send inference requests with model config in headers — the manager loads, swaps, and proxies automatically.
 
 ---
 
@@ -33,125 +33,140 @@ node src/manager/server.js
 Output:
 ```
 Llama Manager running at http://127.0.0.1:4080
+Server binary: D:\DEV\llama-cpp-gateway\dist\universal\llama-server.exe
 Models dir: D:\# AI Stuff\LMStudio_Models
-Server target: D:\DEV\llama-cpp-gateway\dist\universal\llama-server.exe
 ```
 
-Press `Ctrl+C` to stop.
+The manager starts idle. It loads a model on the first inference request, or auto-resumes the last-loaded model if `DETACH_ON_SHUTDOWN=true` was set.
 
-### Test
+### Use It
 
 ```powershell
-# List models
-curl http://127.0.0.1:4080/models
-
-# Start a model
-curl -X POST http://127.0.0.1:4080/start `
+# Inference — model config in headers, body is proxied unchanged
+curl -X POST http://127.0.0.1:4080/v1/chat/completions `
   -H "Content-Type: application/json" `
-  -d '{"modelPath": "Publisher/Repo/model.gguf", "gpuLayers": 99}'
+  -H "X-Model-Path: D:/models/Qwen-35B-Q3_K_M.gguf" `
+  -H "X-Model-CtxSize: 64000" `
+  -H "X-Model-GpuLayers: 99" `
+  -H "X-Model-FlashAttention: true" `
+  -d '{"model": "qwen", "messages": [{"role": "user", "content": "Hello!"}], "stream": true}'
+
+# List available models (scans models dir, reads GGUF headers)
+curl http://127.0.0.1:4080/models
 
 # Check status
 curl http://127.0.0.1:4080/status
 
-# Inference (through manager, SSE streaming supported)
-curl -X POST http://127.0.0.1:4080/v1/chat/completions `
-  -H "Content-Type: application/json" `
-  -d '{"model": "model.gguf", "messages": [{"role": "user", "content": "Hello!"}], "stream": true}'
-
-# Stop
+# Stop the loaded model
 curl -X POST http://127.0.0.1:4080/stop
 ```
+
+Press `Ctrl+C` to stop the manager.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────┐     HTTP      ┌──────────────┐     spawn     ┌─────────────┐
-│   Client    │◄─────────────►│   Manager    │──────────────►│ llama-server│
-│             │   All traffic │  (Port 4080) │               │  (Port 4081)│
-└─────────────┘               └──────────────┘               └────────────┘
-                                    │                               ▲
-                                    │  Proxy (zero transformation)  │
-                                    └───────────────────────────────┘
+┌──────────┐  inference + model config  ┌─────────────┐  spawn/proxy  ┌─────────────┐
+│ Gateway  │───────────────────────────►│  Manager    │──────────────►│ llama-server│
+│          │  headers: X-Model-*        │  (Port 4080)│               │  (dynamic)  │
+└──────────┘                            └─────────────┘               └─────────────┘
+                                              │  auto-starts model from headers
+                                              │  swaps on model path change
+                                              │  proxies SSE unchanged
 ```
+
+The manager is a **dumb but capable service**. It knows nothing about models until a client tells it what to load via headers. The Gateway owns all model configuration — file paths, context size, GPU layers, everything. The manager just executes.
 
 ### Components
 
 | Component | Responsibility |
 |-----------|---------------|
-| **server.js** | HTTP API, request routing, SSE proxy |
-| **process.js** | Child process supervisor, health polling, state machine |
-| **models.js** | Model discovery, GGUF header metadata extraction |
+| **server.js** | HTTP API, header-based model resolution, SSE proxy |
+| **process.js** | Child process supervisor, health polling, model lifecycle |
+| **models.js** | GGUF file discovery and header metadata scanning |
+| **config.js** | Global defaults only (no model registry) |
 | **nLogger** | Structured logging (git submodule) |
 
-### Request Routing
-
-The manager handles four endpoints directly and proxies everything else:
+### Request Flow
 
 | Route | Handler | Description |
 |-------|---------|-------------|
-| `GET /models` | Manager | List available GGUF models |
-| `POST /start` | Manager | Spawn llama-server |
-| `POST /stop` | Manager | Kill llama-server |
-| `GET /status` | Manager | Process state |
-| **Everything else** | **Proxy** | Forwarded to llama-server unchanged |
+| `GET /models` | Manager | Scan models dir, return GGUF metadata |
+| `GET /health` | Manager | Delegate to llama-server health |
+| `GET /status` | Manager | Process state + loaded model path |
+| `POST /stop` | Manager | Kill loaded model |
+| **Everything else** | **Header-driven proxy** | Reads `X-Model-*` headers, starts/swaps model if needed, proxies body unchanged |
 
 ### SSE Streaming Proxy
 
-All inference requests flow through the manager with **zero transformation latency**. SSE streams (`text/event-stream`) are piped directly from llama-server to the client — no parsing, no serialization, no buffering.
+All inference requests flow through with **zero transformation**. The request body is piped directly to llama-server — no JSON parse, no re-serialize, no buffering. SSE response streams are piped back the same way.
 
-```
-Client ──POST /v1/chat/completions (stream: true)──► Manager ──► llama-server
-Client ◄──────────── SSE token stream ◄───────────── Manager ◄── llama-server
-```
+**Proxy overhead: ≤1ms** for text requests. Large payloads (base64 images) also pass through at ~0ms CPU since the body is never parsed.
 
-Supported through proxy:
-- `POST /completions`, `/v1/completions` — with SSE streaming
-- `POST /chat/completions`, `/v1/chat/completions` — OpenAI-compatible
-- `POST /api/chat` — Ollama-compatible
+Supported endpoints (all proxied):
+- `POST /v1/chat/completions` — OpenAI-compatible chat
+- `POST /chat/completions` — Chat generation
+- `POST /v1/completions` — OpenAI-compatible completions
+- `POST /completions` — Legacy text generation
+- `POST /v1/embeddings` — Embedding generation
+- `POST /embeddings` — Embedding generation
 - `POST /v1/messages` — Anthropic-compatible
-- `POST /embeddings`, `/v1/embeddings`
-- `POST /rerank`, `/v1/rerank`
+- `POST /api/chat` — Ollama-compatible
 - `GET /health`, `/metrics`, `/slots`, `/props`
 - All other llama-server endpoints
-
-Progress updates (`return_progress: true`) pass through unchanged.
 
 ### State Machine
 
 ```
-idle ──(POST /start)──► starting ──(health OK)──► running
-  ▲                                              │
-  └──────────────(POST /stop or crash)───────────┘
+idle ──(inference with X-Model-Path)──► starting ──(health OK)──► running
+  ▲                                                          │
+  └────(different X-Model-Path or /stop)─────────────────────┘
 ```
 
 ### Design Principles
 
-- **Singleton**: Only one `llama-server.exe` at a time
+- **No model registry**: Gateway sends full config via headers, manager executes
+- **Auto-start**: Model loads on first request, stays loaded
+- **Auto-swap**: Different `X-Model-Path` stops current model, starts new
 - **Zero dependencies**: Node.js stdlib only (except nLogger)
-- **Fail-fast**: Invalid config = crash, missing model = 400
-- **Transparent proxy**: Inference traffic flows through manager with zero transformation
+- **Transparent proxy**: Body is piped raw — no parse, no transform
+- **Fail-fast**: Missing `X-Model-Path` = 400, invalid path = 500
 
 ---
 
 ## Configuration
 
-All settings via environment variables or `src/manager/config.js`.
+All settings via `src/manager/config.js` (global defaults only).
+
+### Model Config Headers
+
+The Gateway sends these headers with every inference request:
+
+| Header | Required | Description |
+|--------|----------|-------------|
+| `X-Model-Path` | Yes | Absolute path to the `.gguf` file |
+| `X-Model-CtxSize` | No | Context window (default: from config) |
+| `X-Model-GpuLayers` | No | GPU offload layers (default: from config) |
+| `X-Model-FlashAttention` | No | `true`/`false` (default: from config) |
+| `X-Model-Mmproj` | No | Vision projector path |
+| `X-Model-Embedding` | No | `true` for embedding models |
+| `X-Model-Pooling` | No | Pooling strategy (`mean`, `cls`, etc.) |
+| `X-Model-BatchSize` | No | Batch size for embeddings |
+| `X-Model-Mlock` | No | `true` to lock model in RAM |
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MANAGER_PORT` | `4080` | Manager API port |
-| `LLAMA_SERVER_PORT` | `4081` | llama-server port |
 | `LLAMA_SERVER_PATH` | `../../dist/universal/llama-server.exe` | Binary path (relative to `src/manager/`) |
-| `MODELS_DIR` | `D:\# AI Stuff\LMStudio_Models` | GGUF models directory |
-| `DEFAULT_CTX_SIZE` | `8192` | Default context window |
-| `DEFAULT_GPU_LAYERS` | `99` | Default GPU offload layers |
-| `FLASH_ATTENTION` | `true` | Enable Flash Attention |
-| `DETACH_ON_SHUTDOWN` | `false` | Keep model in VRAM on restart |
-| `LOG_RETENTION_DAYS` | `1` | Session log retention |
+| `MODELS_DIR` | `D:\# AI Stuff\LMStudio_Models` | GGUF models directory (for `/models` scanning) |
+| `DEFAULT_CTX_SIZE` | `8192` | Default context window (overridden by header) |
+| `DEFAULT_GPU_LAYERS` | `99` | Default GPU offload layers (overridden by header) |
+| `FLASH_ATTENTION` | `true` | Enable Flash Attention by default |
+| `DETACH_ON_SHUTDOWN` | `false` | Keep model in VRAM on manager restart |
 
 ### Common Scenarios
 
@@ -159,26 +174,63 @@ All settings via environment variables or `src/manager/config.js`.
 # Custom model directory
 $env:MODELS_DIR = "E:\AI\Models"
 
-# Port conflicts
+# Port conflict
 $env:MANAGER_PORT = 8180
-$env:LLAMA_SERVER_PORT = 8181
 
-# Keep model loaded (fast restarts)
+# Keep model loaded across manager restarts
 $env:DETACH_ON_SHUTDOWN = "true"
-
-# Debug logging
-$env:NODE_ENV = "development"
-$env:DEBUG = "true"
 ```
 
-### Flash Attention
+---
 
-Reduces KV cache VRAM by ~50%. Enabled by default. Disable per-request:
+## Gateway Integration
+
+The Gateway's `llamacpp` adapter reads `modelConfig.localInference` and forwards it as `X-Model-*` headers. The manager executes — no registry, no duplication.
+
+### Gateway config.json
 
 ```json
-POST /start
-{ "modelPath": "model.gguf", "flashAttention": false }
+{
+  "models": {
+    "badkid-llama-chat": {
+      "type": "chat",
+      "adapter": "llamacpp",
+      "endpoint": "http://localhost:4080",
+      "localInference": {
+        "enabled": true,
+        "modelPath": "D:/models/Qwen-35B-Q3_K_M.gguf",
+        "mmproj": "D:/models/mmproj-f16.gguf",
+        "contextSize": 64000,
+        "gpuLayers": 99,
+        "flashAttention": true,
+        "mlock": true
+      },
+      "capabilities": {
+        "contextWindow": 64000,
+        "vision": true,
+        "streaming": true
+      }
+    }
+  }
+}
 ```
+
+The `localInference` block is the **source of truth** for model config. The adapter reads it and adds the appropriate headers to every request.
+
+### What Happens
+
+1. Gateway receives a request for model `badkid-llama-chat`
+2. Adapter reads `localInference` config, adds `X-Model-*` headers
+3. POSTs to `http://localhost:4080/v1/chat/completions`
+4. Manager checks if `X-Model-Path` matches the currently loaded model
+5. If not, stops current model (if any), starts new one, waits for health
+6. Proxies the request body unchanged to llama-server, streams response back
+7. Next request with same path → instant proxy, no startup delay
+
+### Adding a New Local Model
+
+1. Add an entry to the Gateway's `config.json` with `adapter: "llamacpp"` and a `localInference` block
+2. That's it. The manager needs no changes — it reads config from headers.
 
 ---
 
@@ -198,18 +250,6 @@ Session logs older than `LOG_RETENTION_DAYS` are auto-deleted. Main log rotates 
 
 ### Running as a Service
 
-**Local Process Manager:**
-```json
-{
-    "llama-manager": {
-        "description": "LLaMA Manager",
-        "path": "C:\\Services\\llama-manager",
-        "exec": "node server.js",
-        "detachOnQuit": false
-    }
-}
-```
-
 **PM2:**
 ```powershell
 pm2 start src/manager/server.js --name llama-manager
@@ -217,7 +257,7 @@ pm2 save
 pm2 startup
 ```
 
-**Windows Task Scheduler (auto-start on login):**
+**Windows Task Scheduler:**
 ```powershell
 $action = New-ScheduledTaskAction -Execute "node" `
     -Argument "D:\DEV\llama-cpp-gateway\src\manager\server.js" `
@@ -229,19 +269,19 @@ Register-ScheduledTask -TaskName "LlamaManager" -Action $action -Trigger $trigge
 ### Monitoring
 
 ```powershell
-# Check status
+# Check status (includes loaded model path)
 curl http://127.0.0.1:4080/status
 
-# Health check (through manager proxy)
+# Health check
 curl http://127.0.0.1:4080/health
 
-# Metrics (Prometheus format, through proxy)
+# Metrics (Prometheus format)
 curl http://127.0.0.1:4080/metrics
 
-# Simple monitor loop
+# Monitor loop
 while ($true) {
     $status = Invoke-RestMethod http://127.0.0.1:4080/status
-    Write-Host "$(Get-Date) - State: $($status.state)"
+    Write-Host "$(Get-Date) - State: $($status.state) Model: $($status.model)"
     Start-Sleep -Seconds 30
 }
 ```
@@ -257,7 +297,7 @@ while ($true) {
 Get-Process | Where-Object {$_.ProcessName -match "node|llama"}
 
 # Check ports
-Get-NetTCPConnection -LocalPort 4080, 4081
+Get-NetTCPConnection -LocalPort 4080
 
 # View latest log
 Get-ChildItem logs\*-gw-*.log | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content
@@ -269,10 +309,10 @@ Get-ChildItem logs\*-gw-*.log | Sort-Object LastWriteTime -Descending | Select-O
 |---------|-----|
 | Port 4080 in use | `Get-NetTCPConnection -LocalPort 4080` then kill or change port |
 | Cannot find llama-server.exe | Check `LLAMA_SERVER_PATH` or run `build\build-universal.ps1` |
-| Model fails to load (OOM) | Reduce `gpuLayers` or `ctxSize` |
-| Server stuck in "starting" | Check logs, verify model path, check port 4081 not in use |
+| Model fails to load (OOM) | Reduce `X-Model-GpuLayers` or `X-Model-CtxSize` |
+| "Missing X-Model-Path" | Gateway adapter not sending headers — check `localInference` config |
+| Server stuck in "starting" | Check logs, verify model path exists |
 | "Cannot find module nLogger" | `git submodule update --init --recursive` |
-| Empty log files | Previous crash before logger wrote anything, safe to delete |
 
 ### Complete Reset
 
@@ -306,7 +346,7 @@ node scripts/tune-model.js
    - **Embedding**: 100 iterations single-threaded + optional concurrency sweep (1-128) → req/s, dimensions
    - **Vision**: Text-only completion + vision pipeline (image encode + generation) → both tok/s, VRAM
 6. **Saves** results to `scripts/tune-results.json` (overwrites previous per model)
-7. **Outputs** a suggested `localInference` config block for llm_gateway
+7. **Outputs** a suggested `localInference` config block for the Gateway
 
 ### Vision Test Image
 
@@ -324,10 +364,11 @@ Results persist in `scripts/tune-results.json` keyed by model path. Previous res
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/models` | List available GGUF models |
-| POST | `/start` | Start llama-server with a model |
-| POST | `/stop` | Stop running llama-server |
-| GET | `/status` | Get current state |
+| GET | `/models` | Scan models dir, return GGUF metadata |
+| GET | `/health` | Health check (delegates to llama-server) |
+| GET | `/status` | Process state + loaded model info |
+| POST | `/stop` | Kill the loaded model |
+| Any | `/v1/*`, `/chat/*`, etc. | Inference — reads `X-Model-*` headers, auto-starts model, proxies body |
 
 ### GET /models
 
@@ -335,48 +376,32 @@ Results persist in `scripts/tune-results.json` keyed by model path. Previous res
 {
   "data": [
     {
-      "name": "model-Q4_K_M.gguf",
-      "path": "Publisher/Repo/model-Q4_K_M.gguf",
-      "fullPath": "D:\\Models\\Publisher\\Repo\\model-Q4_K_M.gguf",
+      "name": "Qwen3.5-35B-A3B-Uncensored-Q3_K_M.gguf",
+      "path": "D:/models/Qwen3.5-35B-A3B-Uncensored-Q3_K_M.gguf",
       "type": "llm",
-      "architecture": "llama",
-      "parameter_count": 8000000000,
-      "context_length": 8192
+      "architecture": "qwen3",
+      "parameter_count": 35000000000,
+      "context_length": 131072,
+      "vision": false
     }
   ]
 }
 ```
 
-### POST /start
+### GET /status
 
-```bash
-curl -X POST http://127.0.0.1:4080/start \
-  -H "Content-Type: application/json" \
-  -d '{"modelPath": "Publisher/Repo/model.gguf", "gpuLayers": 99, "ctxSize": 8192}'
-```
-
-**Parameters:**
-
-| Field | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `modelPath` | string | Yes | — | Relative path from `modelsDir` |
-| `gpuLayers` | number | No | 99 | GPU offload layers (0-99) |
-| `ctxSize` | number | No | 8192 | Context window in tokens |
-| `flashAttention` | boolean | No | true | Enable Flash Attention |
-| `port` | number | No | 4081 | Port for llama-server |
-| `mmprojPath` | string | No | — | Vision projector path |
-
-**Response (200):**
 ```json
 {
-  "message": "Server started",
+  "state": "running",
   "pid": 12345,
-  "args": ["-m", "...", "--port", "4081", "-c", "8192", "-ngl", "99"],
-  "settings": { "ctxSize": 8192, "gpuLayers": 99, "flashAttention": true }
+  "port": 4081,
+  "model": "D:/models/Qwen-35B-Q3_K_M.gguf",
+  "metrics": { "raw": "..." },
+  "detached": false
 }
 ```
 
-**Response (409):** `{ "error": "Conflict: Server already running" }`
+States: `idle`, `starting`, `running`, `error`
 
 ### POST /stop
 
@@ -385,52 +410,10 @@ curl -X POST http://127.0.0.1:4080/start \
 curl -X POST http://127.0.0.1:4080/stop
 
 # Force kill (ignores DETACH_ON_SHUTDOWN)
-curl -X POST http://127.0.0.1:4080/stop \
-  -H "Content-Type: application/json" \
+curl -X POST http://127.0.0.1:4080/stop `
+  -H "Content-Type: application/json" `
   -d '{"force": true}'
 ```
-
-### GET /status
-
-```json
-{ "state": "running", "pid": 12345, "metrics": { "raw": "..." }, "detached": false }
-```
-
-States: `idle`, `starting`, `running`, `error`
-
-### llama-server Direct API (Port 4081)
-
-All llama-server endpoints are accessible through the manager proxy on port 4080. You can use either:
-
-```powershell
-# Through manager proxy (recommended - single endpoint)
-curl http://127.0.0.1:4080/v1/chat/completions
-
-# Direct to llama-server (bypasses manager)
-curl http://127.0.0.1:4081/v1/chat/completions
-```
-
-**Key endpoints available through proxy:**
-
-| Endpoint | Description |
-|----------|-------------|
-| `POST /completion` | Legacy text generation |
-| `POST /completions` | Text generation |
-| `POST /v1/completions` | OpenAI-compatible completions |
-| `POST /chat/completions` | Chat generation |
-| `POST /v1/chat/completions` | OpenAI-compatible chat |
-| `POST /api/chat` | Ollama-compatible chat |
-| `POST /v1/messages` | Anthropic-compatible chat |
-| `POST /embeddings` | Embedding generation |
-| `POST /v1/embeddings` | OpenAI-compatible embeddings |
-| `POST /rerank` | Reranking |
-| `POST /v1/rerank` | OpenAI-compatible reranking |
-| `POST /tokenize` | Tokenize text |
-| `POST /detokenize` | Detokenize IDs |
-| `GET /health` | Health status |
-| `GET /metrics` | Prometheus metrics |
-| `GET /slots` | Slot status |
-| `GET /props` | Server properties |
 
 ### Streaming
 
@@ -439,8 +422,11 @@ All generation endpoints support SSE streaming via `"stream": true`:
 ```powershell
 curl -X POST http://127.0.0.1:4080/v1/chat/completions `
   -H "Content-Type: application/json" `
+  -H "X-Model-Path: D:/models/Qwen-35B-Q3_K_M.gguf" `
+  -H "X-Model-CtxSize: 64000" `
+  -H "X-Model-GpuLayers: 99" `
   -d '{
-    "model": "model.gguf",
+    "model": "qwen",
     "messages": [{"role": "user", "content": "Count to 5"}],
     "stream": true
   }'
@@ -491,9 +477,10 @@ Progress is included in each SSE event:
 | Status | Meaning |
 |--------|---------|
 | 200 | Success |
-| 400 | Bad Request |
-| 404 | Endpoint not found |
-| 409 | Conflict |
+| 400 | Missing `X-Model-Path` header |
+| 500 | llama-server failed to start |
+| 504 | Model startup timeout (>120s) |
+| 502 | llama-server crashed mid-request |
 
 ---
 
@@ -502,14 +489,14 @@ Progress is included in each SSE event:
 ```
 llama-cpp-gateway/
 ├── src/manager/          # Node.js management layer
-│   ├── server.js         # HTTP API
-│   ├── process.js        # Process supervisor
+│   ├── server.js         # HTTP API, header-driven model resolution, proxy
+│   ├── process.js        # Process supervisor, model lifecycle
 │   ├── models.js         # Model discovery & GGUF parser
-│   ├── config.js         # Configuration
+│   ├── config.js         # Global defaults (no model registry)
 │   ├── modules/nLogger/  # Logging (git submodule)
 │   └── test/             # Integration tests
 ├── build/                # Build scripts
-├── scripts/              # CLI tools
+├── scripts/              # CLI tools (tune-model.js)
 ├── dist/                 # Compiled binaries (gitignored)
 ├── llama.cpp/            # Upstream submodule
 ├── docs/                 # Documentation
