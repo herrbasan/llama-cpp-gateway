@@ -146,10 +146,16 @@ All settings via `config.json` at the project root. Environment variables overri
   "defaultCtxSize": 8192,
   "defaultGpuLayers": 99,
   "flashAttention": true,
+  "defaultParallelSlots": 1,
+  "defaultKvUnified": false,
+  "defaultCtxCheckpoints": 0,
+  "defaultCheckpointEveryTokens": -1,
   "detachOnShutdown": false,
   "modelsDir": "D:\\# AI Stuff\\LMStudio_Models"
 }
 ```
+
+The manager defaults to a conservative `llama-server` profile for stability: one slot, non-unified KV, and context checkpoints disabled unless you override them in `config.json`.
 
 ### Model Config Headers
 
@@ -299,6 +305,7 @@ Get-ChildItem logs\*-gw-*.log | Sort-Object LastWriteTime -Descending | Select-O
 | "Missing X-Model-Path" | Gateway adapter not sending headers — check `localInference` config |
 | Server stuck in "starting" | Check logs, verify model path exists |
 | "Cannot find module nLogger" | `git submodule update --init --recursive` |
+| Repeated `read ECONNRESET` then `llama-server exited` | Keep `defaultParallelSlots: 1`, `defaultKvUnified: false`, and checkpoints disabled |
 
 ### Complete Reset
 
