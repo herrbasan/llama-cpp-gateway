@@ -162,7 +162,8 @@ async function handleInference(req, res) {
       return proxyToInstance(req, res, inst);
     }
 
-    return proxyToInstance(req, res, existing);
+    const runningInstance = getInstance(modelConfig.modelPath);
+    return proxyToInstance(req, res, runningInstance);
   } catch (err) {
     return sendJson(res, 500, {
       error: 'Failed to start model',
