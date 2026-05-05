@@ -65,8 +65,8 @@ async function checkExistingServer(port) {
 }
 
 function normalizeModelPath(rawPath) {
-    if (path.isAbsolute(rawPath)) return rawPath;
-    return path.resolve(config.modelsDir, rawPath);
+    const resolved = path.isAbsolute(rawPath) ? rawPath : path.resolve(config.modelsDir, rawPath);
+    return path.resolve(resolved);
 }
 
 function buildArgs(modelPath, options = {}) {
