@@ -69,6 +69,38 @@ function normalizeModelPath(rawPath) {
     return path.resolve(config.modelsDir, rawPath);
 }
 
+function normalizeConfig(opts = {}) {
+    return {
+        ctxSize: opts.ctxSize ?? config.defaultCtxSize,
+        gpuLayers: opts.gpuLayers ?? config.defaultGpuLayers,
+        flashAttention: opts.flashAttention ?? config.flashAttention,
+        parallelSlots: opts.parallelSlots ?? config.defaultParallelSlots,
+        kvUnified: opts.kvUnified ?? config.defaultKvUnified,
+        ctxCheckpoints: opts.ctxCheckpoints ?? config.defaultCtxCheckpoints,
+        checkpointEveryTokens: opts.checkpointEveryTokens ?? config.defaultCheckpointEveryTokens,
+        mmprojPath: opts.mmprojPath ?? null,
+        embedding: opts.embedding ?? false,
+        pooling: opts.pooling ?? null,
+        batchSize: opts.batchSize ?? null,
+        mlock: opts.mlock ?? false,
+    };
+}
+
+function configsMatch(a, b) {
+    return a.ctxSize === b.ctxSize &&
+        a.gpuLayers === b.gpuLayers &&
+        a.flashAttention === b.flashAttention &&
+        a.parallelSlots === b.parallelSlots &&
+        a.kvUnified === b.kvUnified &&
+        a.ctxCheckpoints === b.ctxCheckpoints &&
+        a.checkpointEveryTokens === b.checkpointEveryTokens &&
+        a.mmprojPath === b.mmprojPath &&
+        a.embedding === b.embedding &&
+        a.pooling === b.pooling &&
+        a.batchSize === b.batchSize &&
+        a.mlock === b.mlock;
+}
+
 function buildArgs(modelPath, options = {}) {
     const port = options.port;
     const ctxSize = options.ctxSize ?? config.defaultCtxSize;
@@ -107,6 +139,7 @@ function allocatePort() {
 }
 
 function spawnServer(modelPath, options = {}) {
+    const normalized = normalizeConfig(options);
     const existing = instances.get(modelPath);
     if (existing && existing.state !== 'error') {
         throw new Error(`Server already running with model: ${modelPath}`);
@@ -117,7 +150,7 @@ function spawnServer(modelPath, options = {}) {
     }
 
     const port = options.port || allocatePort();
-    const args = buildArgs(modelPath, { ...options, port });
+    const args = buildArgs(modelPath, { ...normalized, port });
 
     log.info(`Spawning llama-server: ${path.basename(modelPath)} on port ${port}`);
 
@@ -125,7 +158,7 @@ function spawnServer(modelPath, options = {}) {
         modelPath,
         port,
         state: 'starting',
-        options,
+        options: normalized,
         metrics: {},
         detached: false,
         process: null,
@@ -204,20 +237,26 @@ function killAll(options = {}) {
 
 async function ensureModel(modelPath, options = {}) {
     const absolutePath = normalizeModelPath(modelPath);
+    const normalizedOptions = normalizeConfig(options);
     const existing = instances.get(absolutePath);
 
     if (existing && existing.state === 'running') {
-        return { port: existing.port, alreadyRunning: true };
+        const existingConfig = normalizeConfig(existing.options);
+        if (!configsMatch(existingConfig, normalizedOptions)) {
+            log.info(`Config mismatch for ${modelPath}, restarting server...`);
+            killInstance(absolutePath, { force: true });
+        } else {
+            return { port: existing.port, alreadyRunning: true };
+        }
     }
 
     if (existing && (existing.state === 'starting' || existing.state === 'error')) {
         if (existing.state === 'error') {
             killInstance(absolutePath, { force: true });
         }
-        // Fall through to restart
     }
 
-    spawnServer(absolutePath, options);
+    spawnServer(absolutePath, { ...options, ...normalizedOptions });
     return { port: options.port || nextPort - 1, alreadyRunning: false };
 }
 
@@ -228,7 +267,7 @@ async function reattachExisting(port, modelPath, options = {}) {
             modelPath,
             port,
             state: 'running',
-            options,
+            options: normalizeConfig(options),
             metrics: {},
             detached: true,
             process: { pid: 'unknown', detached: true },

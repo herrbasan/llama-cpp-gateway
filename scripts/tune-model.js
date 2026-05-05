@@ -50,13 +50,14 @@ function saveResults(results) {
 // ── Helpers ─────────────────────────────────────────────
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
-const EMBEDDING_ARCHS = ['bert', 'nomic-bert', 'jina-bert', 'qwen2', 'gemma', 'clip', 'bge'];
+const EMBEDDING_ARCHS = ['bert', 'nomic-bert', 'jina-bert', 'clip', 'bge'];
 const VISION_ARCHS = ['qwen2vl', 'minicpm', 'llava', 'qwen2-vl', 'phi3-v', 'mllama'];
 
-function isEmbeddingModel(arch, name) {
-  if (!arch) return name.toLowerCase().includes('embed');
-  return EMBEDDING_ARCHS.some(a => arch.toLowerCase().includes(a)) &&
-    (name.toLowerCase().includes('embed') || name.toLowerCase().includes('bge'));
+function isEmbeddingModel(arch, name, dir) {
+  const fullName = (dir + name).toLowerCase();
+  if (fullName.includes('embeddings') || fullName.includes('embedding')) return true;
+  if (!arch) return false;
+  return EMBEDDING_ARCHS.some(a => arch.toLowerCase().includes(a));
 }
 
 function isVisionModel(arch, name, dir) {
@@ -208,7 +209,7 @@ async function findModels(dir) {
     m.contextLength = meta.contextLength;
     m.architecture = meta.architecture;
     m.embeddingLength = meta.embeddingLength;
-    m.isEmbedding = isEmbeddingModel(meta.architecture, m.name);
+    m.isEmbedding = isEmbeddingModel(meta.architecture, m.name, m.dir);
     m.isVision = isVisionModel(meta.architecture, m.name, m.dir);
     m.mmprojPath = findMmproj(m.dir, m.fullPath);
   }
