@@ -23,7 +23,9 @@ export default {
   defaultParallelSlots: cfg.defaultParallelSlots ?? 1,
   defaultKvUnified: cfg.defaultKvUnified ?? false,
   defaultCtxCheckpoints: cfg.defaultCtxCheckpoints ?? 0,
-  defaultCheckpointEveryTokens: cfg.defaultCheckpointEveryTokens ?? -1,
+defaultCheckpointEveryTokens: cfg.defaultCheckpointEveryTokens ?? -1,
+  defaultBatchSize: cfg.defaultBatchSize ?? 2048,
+  defaultUbatchSize: cfg.defaultUbatchSize ?? 512,
   detachOnShutdown: cfg.detachOnShutdown,
 
   modelsDir: cfg.modelsDir,
