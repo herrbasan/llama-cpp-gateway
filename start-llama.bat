@@ -1,0 +1,2 @@
+@echo off
+"dist\universal\llama-server.exe" -m "E:\LM Studio Models\Qwen\Qwen3-Embedding-4B-GGUF\Qwen3-Embedding-4B-Q4_K_M.gguf" -c 32000 -b 8192 --ubatch-size 8192 -ngl 99 --embedding --pooling mean --host 0.0.0.0 --port 4081
