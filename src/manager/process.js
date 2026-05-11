@@ -115,6 +115,7 @@ function buildArgs(modelPath, options = {}) {
 
     const args = [
         '-m', modelPath,
+        '--host', config.host,
         '--port', port.toString(),
         '-c', ctxSize.toString(),
         '-ngl', gpuLayers.toString(),
