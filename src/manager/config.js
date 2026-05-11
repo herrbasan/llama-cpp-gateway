@@ -26,6 +26,8 @@ export default {
 defaultCheckpointEveryTokens: cfg.defaultCheckpointEveryTokens ?? -1,
   defaultBatchSize: cfg.defaultBatchSize ?? 2048,
   defaultUbatchSize: cfg.defaultUbatchSize ?? 512,
+  defaultThreads: cfg.defaultThreads ?? 8,
+  defaultThreadsBatch: cfg.defaultThreadsBatch ?? 8,
   detachOnShutdown: cfg.detachOnShutdown,
 
   modelsDir: cfg.modelsDir,
