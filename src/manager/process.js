@@ -70,8 +70,13 @@ function normalizeModelPath(rawPath) {
 }
 
 function normalizeConfig(opts = {}) {
+    const isEmbedding = opts.embedding ?? false;
+    const ctxSize = opts.ctxSize ?? config.defaultCtxSize;
+    const effectiveBatchSize = opts.batchSize ?? (isEmbedding ? ctxSize : config.defaultBatchSize);
+    const effectiveUbatchSize = opts.ubatchSize ?? (isEmbedding ? ctxSize : config.defaultUbatchSize);
+
     return {
-        ctxSize: opts.ctxSize ?? config.defaultCtxSize,
+        ctxSize,
         gpuLayers: opts.gpuLayers ?? config.defaultGpuLayers,
         flashAttention: opts.flashAttention ?? config.flashAttention,
         parallelSlots: opts.parallelSlots ?? config.defaultParallelSlots,
@@ -79,10 +84,10 @@ function normalizeConfig(opts = {}) {
         ctxCheckpoints: opts.ctxCheckpoints ?? config.defaultCtxCheckpoints,
         checkpointEveryTokens: opts.checkpointEveryTokens ?? config.defaultCheckpointEveryTokens,
         mmprojPath: opts.mmprojPath ?? null,
-        embedding: opts.embedding ?? false,
+        embedding: isEmbedding,
         pooling: opts.pooling ?? null,
-        ubatchSize: opts.ubatchSize ?? config.defaultUbatchSize,
-        batchSize: opts.batchSize ?? config.defaultBatchSize,
+        ubatchSize: effectiveUbatchSize,
+        batchSize: effectiveBatchSize,
         threads: opts.threads ?? config.defaultThreads,
         threadsBatch: opts.threadsBatch ?? config.defaultThreadsBatch,
         mlock: opts.mlock ?? false,
