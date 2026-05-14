@@ -81,7 +81,10 @@ function normalizeConfig(opts = {}) {
         mmprojPath: opts.mmprojPath ?? null,
         embedding: opts.embedding ?? false,
         pooling: opts.pooling ?? null,
-        batchSize: opts.batchSize ?? null,
+        ubatchSize: opts.ubatchSize ?? config.defaultUbatchSize,
+        batchSize: opts.batchSize ?? config.defaultBatchSize,
+        threads: opts.threads ?? config.defaultThreads,
+        threadsBatch: opts.threadsBatch ?? config.defaultThreadsBatch,
         mlock: opts.mlock ?? false,
     };
 }
@@ -98,6 +101,9 @@ function configsMatch(a, b) {
         a.embedding === b.embedding &&
         a.pooling === b.pooling &&
         a.batchSize === b.batchSize &&
+        a.ubatchSize === b.ubatchSize &&
+        a.threads === b.threads &&
+        a.threadsBatch === b.threadsBatch &&
         a.mlock === b.mlock;
 }
 
@@ -113,6 +119,7 @@ function buildArgs(modelPath, options = {}) {
 
     const args = [
         '-m', modelPath,
+        '--host', config.host,
         '--port', port.toString(),
         '-c', ctxSize.toString(),
         '-ngl', gpuLayers.toString(),
@@ -126,7 +133,10 @@ function buildArgs(modelPath, options = {}) {
     if (options.mmprojPath) args.push('--mmproj', options.mmprojPath);
     if (options.embedding) args.push('--embedding');
     if (options.pooling) args.push('--pooling', options.pooling);
+    if (options.ubatchSize) args.push('--ubatch-size', options.ubatchSize.toString());
     if (options.batchSize) args.push('--batch-size', options.batchSize.toString());
+    if (options.threads) args.push('-t', options.threads.toString());
+    if (options.threadsBatch) args.push('-tb', options.threadsBatch.toString());
     if (options.mlock) args.push('--mlock');
 
     return args;
