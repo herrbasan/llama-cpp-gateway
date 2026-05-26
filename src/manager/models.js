@@ -11,6 +11,7 @@ const VALID_EXTENSIONS = ['.gguf', '.mmproj'];
 
 let tuneResultsCache = null;
 let tuneResultsMtime = 0;
+const modelPathCache = new Map();
 
 async function loadTuneResults() {
     const tunePath = path.resolve(__dirname, '../../scripts/tune-results.json');
@@ -117,6 +118,96 @@ async function extractGgufMetadata(filePath) {
         if (fd) await fd.close();
     }
     return metadata;
+}
+
+async function findModelFolder(name, dir = config.modelsDir) {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        const fullPath = path.join(dir, entry.name);
+        if (entry.name === name) return fullPath;
+        const nested = await findModelFolder(name, fullPath);
+        if (nested) return nested;
+    }
+    return null;
+}
+
+async function findGgufFiles(dir) {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    return entries
+        .filter(e => e.isFile() && e.name.toLowerCase().endsWith('.gguf') && !e.name.toLowerCase().startsWith('mmproj'))
+        .map(e => path.join(dir, e.name));
+}
+
+async function findMmproj(dir) {
+    try {
+        const entries = await fs.readdir(dir, { withFileTypes: true });
+        const mmproj = entries.find(e =>
+            e.isFile() &&
+            (e.name.toLowerCase().endsWith('.mmproj') ||
+                (e.name.toLowerCase().startsWith('mmproj') && e.name.toLowerCase().endsWith('.gguf')))
+        );
+        return mmproj ? path.join(dir, mmproj.name) : null;
+    } catch {
+        return null;
+    }
+}
+
+export async function resolveModelPath(modelPath, modelName = null) {
+    const cacheKey = `${modelPath}|${modelName || ''}`;
+    if (modelPathCache.has(cacheKey)) {
+        return modelPathCache.get(cacheKey);
+    }
+
+    let ggufPath = null;
+    let modelDir = null;
+
+    const isGgufFile = modelPath.toLowerCase().endsWith('.gguf');
+    const hasPathSep = modelPath.includes('/') || modelPath.includes('\\');
+
+    if (isGgufFile && path.isAbsolute(modelPath)) {
+        ggufPath = path.resolve(modelPath);
+        modelDir = path.dirname(ggufPath);
+    } else if (isGgufFile && hasPathSep) {
+        ggufPath = path.resolve(config.modelsDir, modelPath);
+        modelDir = path.dirname(ggufPath);
+    } else if (hasPathSep) {
+        modelDir = path.resolve(config.modelsDir, modelPath);
+    } else {
+        modelDir = await findModelFolder(modelPath);
+        if (!modelDir) {
+            throw new Error(`Model not found: "${modelPath}". No matching folder in models directory.`);
+        }
+    }
+
+    if (modelDir && !ggufPath) {
+        const ggufFiles = await findGgufFiles(modelDir);
+        if (ggufFiles.length === 0) {
+            throw new Error(`No .gguf files found in: ${modelDir}`);
+        }
+
+        if (modelName) {
+            ggufPath = ggufFiles.find(f => path.basename(f) === modelName);
+            if (!ggufPath) {
+                const available = ggufFiles.map(f => path.basename(f)).join(', ');
+                throw new Error(`Model "${modelName}" not found. Available: ${available}`);
+            }
+        } else if (ggufFiles.length === 1) {
+            ggufPath = ggufFiles[0];
+        } else {
+            ggufPath = ggufFiles[0];
+            log.info(`Multiple .gguf files in ${modelDir}, using: ${path.basename(ggufPath)}. Specify modelName to select a different one.`);
+        }
+    }
+
+    const mmprojPath = modelDir ? await findMmproj(modelDir) : null;
+    if (mmprojPath) {
+        log.info(`Auto-detected mmproj: ${path.basename(mmprojPath)}`);
+    }
+
+    const result = { ggufPath, mmprojPath };
+    modelPathCache.set(cacheKey, result);
+    return result;
 }
 
 export async function discoverModels(dir = config.modelsDir) {

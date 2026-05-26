@@ -14,10 +14,12 @@ Multi-instance manager: up to `maxInstances` (default 4) `llama-server` processe
 ## Hot Path (Inference Request)
 
 1. `extractModelConfig(req)` reads `X-Model-*` headers
-2. `getInstance(modelPath)` checks if model already running → instant proxy (≤1ms)
-3. `ensureModel()` — config match check, spawn if needed
-4. Health poll loop (1s interval, 120s timeout) waits for `starting` → `running`
-5. `proxyToInstance()` pipes req body → llama-server, pipes response back. Zero parsing.
+2. `resolveModelPath()` resolves short name/relative path to full `.gguf` path (cached on repeat calls)
+3. Auto-detects `.mmproj` in model's folder if no explicit `X-Model-Mmproj` header
+4. `getInstance(resolvedPath)` checks if model already running → instant proxy (≤1ms)
+5. `ensureModel()` — config match check, spawn if needed
+6. Health poll loop (1s interval, 120s timeout) waits for `starting` → `running`
+7. `proxyToInstance()` pipes req body → llama-server, pipes response back. Zero parsing.
 
 ## Proxy Error Handling
 
@@ -57,6 +59,22 @@ When `detachOnShutdown: true`:
 ## Model Discovery
 
 `discoverModels()` recursively scans `modelsDir` for `.gguf` and `.mmproj` files. GGUF metadata is read from the first 2MB. Vision models are detected by architecture containing `mllm` or from `tune-results.json` benchmark data.
+
+## Model Resolution
+
+`resolveModelPath()` in `models.js` resolves `X-Model-Path` values to full `.gguf` paths:
+- **Absolute `.gguf` path** → used directly
+- **Relative `.gguf` path** (has path separators) → resolved under `modelsDir`
+- **Path to directory** (has separators, no `.gguf` extension) → resolved under `modelsDir`, pick `.gguf` inside
+- **Short name** (no separators) → recursively search `modelsDir` for matching folder name, pick `.gguf` inside
+
+When folder has multiple `.gguf` files:
+- `X-Model-Name` header specifies the exact filename (e.g. `Model-Q4_K_M.gguf`)
+- If omitted, first file found is used (log warning)
+
+**Auto mmproj**: If a `.mmproj` file exists in the same folder as the model, it's attached automatically. Explicit `X-Model-Mmproj` header overrides this.
+
+Resolution results are cached in `modelPathCache` (Map). Cache key is `modelPath|modelName`. Hot path hits cache and skips filesystem access.
 
 ## Model Tuner
 

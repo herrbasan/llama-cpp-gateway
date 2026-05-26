@@ -9,7 +9,7 @@ import {
   getAllInstances,
   restoreState,
 } from './process.js';
-import { discoverModels } from './models.js';
+import { discoverModels, resolveModelPath } from './models.js';
 
 const log = createLogger();
 
@@ -40,6 +40,7 @@ function extractModelConfig(req) {
 
   return {
     modelPath,
+    modelName: req.headers['x-model-name'] || undefined,
     ctxSize: parseHeaderInt('x-model-ctxsize'),
     gpuLayers: parseHeaderInt('x-model-gpulayers'),
     flashAttention: req.headers['x-model-flashattention'] ? req.headers['x-model-flashattention'] === 'true' : undefined,
@@ -118,17 +119,27 @@ async function handleInference(req, res) {
     });
   }
 
-  const existing = getInstance(modelConfig.modelPath);
+  let resolved;
+  try {
+    resolved = await resolveModelPath(modelConfig.modelPath, modelConfig.modelName);
+  } catch (err) {
+    return sendJson(res, 400, { error: 'Model Resolution Failed', details: err.message });
+  }
+
+  const finalModelPath = resolved.ggufPath;
+  const finalMmproj = modelConfig.mmproj || resolved.mmprojPath;
+
+  const existing = getInstance(finalModelPath);
   if (existing && existing.state === 'running') {
     return proxyToInstance(req, res, existing);
   }
 
   try {
-    const result = await ensureModel(modelConfig.modelPath, {
+    const result = await ensureModel(finalModelPath, {
       ctxSize: modelConfig.ctxSize ?? config.defaultCtxSize,
       gpuLayers: modelConfig.gpuLayers ?? config.defaultGpuLayers,
       flashAttention: modelConfig.flashAttention ?? config.flashAttention,
-      mmprojPath: modelConfig.mmproj,
+      mmprojPath: finalMmproj,
       embedding: modelConfig.embedding,
       pooling: modelConfig.pooling,
       batchSize: modelConfig.batchSize,
@@ -136,13 +147,13 @@ async function handleInference(req, res) {
     });
 
     if (!result.alreadyRunning) {
-      log.info(`Waiting for model to load: ${modelConfig.modelPath}...`);
+      log.info(`Waiting for model to load: ${finalModelPath}...`);
       const maxWait = 120_000;
       const pollMs = 1000;
       const start = Date.now();
       while (Date.now() - start < maxWait) {
         await new Promise((r) => setTimeout(r, pollMs));
-        const inst = getInstance(modelConfig.modelPath);
+        const inst = getInstance(finalModelPath);
         if (inst && inst.state === 'running') break;
         if (inst && inst.state === 'error') {
           return sendJson(res, 500, {
@@ -151,18 +162,18 @@ async function handleInference(req, res) {
           });
         }
       }
-      const inst = getInstance(modelConfig.modelPath);
+      const inst = getInstance(finalModelPath);
       if (!inst || inst.state !== 'running') {
         return sendJson(res, 504, {
           error: 'Model startup timeout',
           details: `Model did not become healthy within ${maxWait / 1000}s`,
         });
       }
-      log.info(`Model ready: ${modelConfig.modelPath}`);
+      log.info(`Model ready: ${finalModelPath}`);
       return proxyToInstance(req, res, inst);
     }
 
-    const runningInstance = getInstance(modelConfig.modelPath);
+    const runningInstance = getInstance(finalModelPath);
     return proxyToInstance(req, res, runningInstance);
   } catch (err) {
     return sendJson(res, 500, {

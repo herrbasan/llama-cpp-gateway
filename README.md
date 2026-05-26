@@ -39,13 +39,21 @@ The manager starts idle. It loads a model on the first inference request, or aut
 ### Use It
 
 ```powershell
-# Inference — model config in headers, body is proxied unchanged
+# Inference — short model name (auto-resolves to folder in modelsDir)
+curl -X POST http://127.0.0.1:4080/v1/chat/completions `
+  -H "Content-Type: application/json" `
+  -H "X-Model-Path: Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive" `
+  -H "X-Model-CtxSize: 64000" `
+  -H "X-Model-GpuLayers: 99" `
+  -H "X-Model-FlashAttention: true" `
+  -d '{"model": "qwen", "messages": [{"role": "user", "content": "Hello!"}], "stream": true}'
+
+# Full path still works too
 curl -X POST http://127.0.0.1:4080/v1/chat/completions `
   -H "Content-Type: application/json" `
   -H "X-Model-Path: D:/models/Qwen-35B-Q3_K_M.gguf" `
   -H "X-Model-CtxSize: 64000" `
   -H "X-Model-GpuLayers: 99" `
-  -H "X-Model-FlashAttention: true" `
   -d '{"model": "qwen", "messages": [{"role": "user", "content": "Hello!"}], "stream": true}'
 
 # List available models (scans models dir, reads GGUF headers)
@@ -140,6 +148,33 @@ idle ──(inference with X-Model-Path)──► starting ──(health OK)─�
 - **Transparent proxy**: Body is piped raw — no parse, no transform
 - **Fail-fast**: Missing `X-Model-Path` = 400, invalid path = 500
 
+### Model Resolution
+
+The manager resolves `X-Model-Path` flexibly — it accepts full paths, relative paths, or short model names:
+
+| Input | How it resolves |
+|-------|----------------|
+| `D:/models/Qwen-Q3_K_M.gguf` | Absolute path — used directly |
+| `HauhauCS/Qwen/Qwen-Q3_K_M.gguf` | Relative path — resolved under `modelsDir` |
+| `Qwen3.5-35B-A3B-Uncensored-HauhauCS-Aggressive` | Short name — searches `modelsDir` recursively for a matching folder |
+
+When a short name is used, the manager searches the models directory for a folder with that name, then picks the `.gguf` file inside it. If the folder contains multiple `.gguf` files, use `X-Model-Name` to specify the exact file:
+
+```powershell
+# Multiple quantizations in one folder — specify exact file
+curl -X POST http://127.0.0.1:4080/v1/chat/completions `
+  -H "X-Model-Path: MyModel" `
+  -H "X-Model-Name: MyModel-Q4_K_M.gguf" `
+  -H "Content-Type: application/json" `
+  -d '{"model": "x", "messages": [{"role": "user", "content": "Hi"}]}'
+```
+
+If `X-Model-Name` is omitted and multiple `.gguf` files exist, the first one found is used.
+
+**Vision models (mmproj) are auto-detected.** If a `.mmproj` file exists in the same folder as the model, it's attached automatically. No need to specify `X-Model-Mmproj` unless you want to override.
+
+Resolution results are cached in memory — subsequent requests with the same short name resolve instantly (Map lookup, <1ms).
+
 ---
 
 ## Configuration
@@ -200,11 +235,12 @@ The Gateway sends these headers with every inference request:
 
 | Header | Required | Description |
 |--------|----------|-------------|
-| `X-Model-Path` | Yes | Absolute path to the `.gguf` file |
+| `X-Model-Path` | Yes | Full path, relative path, or short model name (resolved automatically) |
+| `X-Model-Name` | No | Exact `.gguf` filename when folder has multiple quantizations |
 | `X-Model-CtxSize` | No | Context window (default: from config) |
 | `X-Model-GpuLayers` | No | GPU offload layers (default: from config) |
 | `X-Model-FlashAttention` | No | `true`/`false` (default: from config) |
-| `X-Model-Mmproj` | No | Vision projector path |
+| `X-Model-Mmproj` | No | Vision projector path (auto-detected if `.mmproj` exists in model folder) |
 | `X-Model-Embedding` | No | `true` for embedding models |
 | `X-Model-Pooling` | No | Pooling strategy (`mean`, `cls`, etc.) |
 | `X-Model-BatchSize` | No | Batch size for embeddings |
@@ -227,36 +263,55 @@ The Gateway's `llamacpp` adapter reads `modelConfig.localInference` and forwards
       "endpoint": "http://localhost:4080",
       "localInference": {
         "enabled": true,
-        "modelPath": "D:/models/Qwen-35B-Q3_K_M.gguf",
-        "mmproj": "D:/models/mmproj-f16.gguf",
-        "contextSize": 64000,
+        "modelPath": "Gemma-4-E4B-Uncensored-HauhauCS-Aggressive",
+        "contextSize": 128000,
         "gpuLayers": 99,
         "flashAttention": true,
         "mlock": true
       },
       "capabilities": {
-        "contextWindow": 64000,
+        "contextWindow": 128000,
         "vision": true,
         "streaming": true
+      }
+    },
+    "badkid-llama-embed": {
+      "type": "embedding",
+      "adapter": "llamacpp",
+      "endpoint": "http://localhost:4080",
+      "localInference": {
+        "enabled": true,
+        "modelPath": "embeddinggemma-300M-GGUF",
+        "contextSize": 512,
+        "gpuLayers": 99,
+        "embedding": true,
+        "pooling": "mean",
+        "batchSize": 512,
+        "mlock": true
+      },
+      "capabilities": {
+        "contextWindow": 512,
+        "embedding": true
       }
     }
   }
 }
 ```
 
-The `localInference` block is the **source of truth** for model config. The adapter reads it and adds the appropriate headers to every request.
+The `localInference` block is the **source of truth** for model config. The adapter reads it and adds the appropriate headers to every request. Note: no `mmproj` field needed — the manager auto-detects vision projectors from the model's folder.
 
 ### What Happens
 
 1. Gateway receives a request for model `badkid-llama-chat`
 2. Adapter reads `localInference` config, adds `X-Model-*` headers
 3. POSTs to `http://localhost:4080/v1/chat/completions`
-4. Manager checks if `X-Model-Path` matches a running instance
-5. If already running with matching config → instant proxy, zero delay
-6. If not running → spawn new llama-server instance, wait for health (up to 120s)
-7. If running but config changed → restart instance, then proxy
-8. Proxies the request body unchanged to llama-server, streams response back
-9. Next request with same path + config → instant proxy, no startup delay
+4. Manager resolves `X-Model-Path` (short name → folder → `.gguf` file)
+5. Auto-detects `.mmproj` in the model's folder
+6. Checks if resolved model is already running with matching config → instant proxy
+7. If not running → spawn new llama-server instance, wait for health (up to 120s)
+8. If running but config changed → restart instance, then proxy
+9. Proxies the request body unchanged to llama-server, streams response back
+10. Next request with same path + config → instant proxy, no startup delay
 
 ### Adding a New Local Model
 
