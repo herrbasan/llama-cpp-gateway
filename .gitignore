@@ -23,6 +23,6 @@ node_modules/
 *.log
 
 # Folders
-_Archive/
+/_Archive/
 .Kilo/
 out/

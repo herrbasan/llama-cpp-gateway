@@ -27,12 +27,14 @@ node src/manager/server.js
 
 Output:
 ```
-Llama Manager running at http://127.0.0.1:4080
+Llama Manager running at http://localhost:4080
+Binding to: 0.0.0.0 (all interfaces)
 Server binary: D:\DEV\llama-cpp-gateway\dist\universal\llama-server.exe
 Models dir: D:\# AI Stuff\LMStudio_Models
+Max concurrent instances: 4
 ```
 
-The manager starts idle. It loads a model on the first inference request, or auto-resumes the last-loaded model if `DETACH_ON_SHUTDOWN=true` was set.
+The manager starts idle. It loads a model on the first inference request, or auto-resumes detached instances if `detachOnShutdown: true` was set.
 
 ### Use It
 
@@ -52,7 +54,7 @@ curl http://127.0.0.1:4080/models
 # Check status
 curl http://127.0.0.1:4080/status
 
-# Stop the loaded model
+# Stop all loaded models
 curl -X POST http://127.0.0.1:4080/stop
 ```
 
@@ -67,19 +69,20 @@ Press `Ctrl+C` to stop the manager.
 │ Gateway  │───────────────────────────►│  Manager    │──────────────►│ llama-server│
 │          │  headers: X-Model-*        │  (Port 4080)│               │  (dynamic)  │
 └──────────┘                            └─────────────┘               └─────────────┘
-                                              │  auto-starts model from headers
-                                              │  swaps on model path change
-                                              │  proxies SSE unchanged
+                                               │  auto-starts model from headers
+                                               │  supports up to maxInstances concurrent
+                                               │  hot path: same model = instant proxy
+                                               │  proxies SSE unchanged
 ```
 
-The manager is a **dumb but capable service**. It knows nothing about models until a client tells it what to load via headers. The Gateway owns all model configuration — file paths, context size, GPU layers, everything. The manager just executes.
+The manager is a **multi-instance inference service**. It supports running up to `maxInstances` models concurrently (default: 4). Each unique `X-Model-Path` gets its own `llama-server` process on an auto-assigned port. If a requested model is already running, the request is proxied immediately with zero overhead.
 
 ### Components
 
 | Component | Responsibility |
 |-----------|---------------|
 | **server.js** | HTTP API, header-based model resolution, SSE proxy |
-| **process.js** | Child process supervisor, health polling, model lifecycle |
+| **process.js** | Child process supervisor, health polling, multi-instance lifecycle |
 | **models.js** | GGUF file discovery and header metadata scanning |
 | **config.js** | Global defaults only (no model registry) |
 | **nLogger** | Structured logging (git submodule) |
@@ -89,10 +92,10 @@ The manager is a **dumb but capable service**. It knows nothing about models unt
 | Route | Handler | Description |
 |-------|---------|-------------|
 | `GET /models` | Manager | Scan models dir, return GGUF metadata |
-| `GET /health` | Manager | Delegate to llama-server health |
-| `GET /status` | Manager | Process state + loaded model path |
-| `POST /stop` | Manager | Kill loaded model |
-| **Everything else** | **Header-driven proxy** | Reads `X-Model-*` headers, starts/swaps model if needed, proxies body unchanged |
+| `GET /health` | Manager | Delegate to all running llama-server instances |
+| `GET /status` | Manager | List all instances with state + model info |
+| `POST /stop` | Manager | Kill all loaded models |
+| **Everything else** | **Header-driven proxy** | Reads `X-Model-*` headers, starts model if needed, proxies body unchanged |
 
 ### SSE Streaming Proxy
 
@@ -112,19 +115,27 @@ Supported endpoints (all proxied):
 - `GET /health`, `/metrics`, `/slots`, `/props`
 - All other llama-server endpoints
 
-### State Machine
+### Multi-Instance State Machine
+
+Each model instance follows this lifecycle independently:
 
 ```
 idle ──(inference with X-Model-Path)──► starting ──(health OK)──► running
   ▲                                                          │
-  └────(different X-Model-Path or /stop)─────────────────────┘
+  └────(POST /stop or config mismatch)───────────────────────┘
 ```
+
+- **Same model, same config** → instant proxy, no startup delay
+- **Same model, different config** (ctxSize, gpuLayers, etc.) → restart that instance
+- **New model** → spawn new instance (up to `maxInstances`)
+- **Max instances reached** → 500 error, stop a model first
 
 ### Design Principles
 
 - **No model registry**: Gateway sends full config via headers, manager executes
+- **Multi-instance**: Multiple models can run concurrently (up to `maxInstances`)
 - **Auto-start**: Model loads on first request, stays loaded
-- **Auto-swap**: Different `X-Model-Path` stops current model, starts new
+- **Config-aware restart**: Same path with different settings triggers a restart
 - **Zero dependencies**: Node.js stdlib only (except nLogger)
 - **Transparent proxy**: Body is piped raw — no parse, no transform
 - **Fail-fast**: Missing `X-Model-Path` = 400, invalid path = 500
@@ -139,6 +150,7 @@ All settings via `config.json` at the project root. Environment variables overri
 
 ```json
 {
+  "host": "0.0.0.0",
   "port": 4080,
   "serverPort": 4081,
   "maxInstances": 4,
@@ -150,10 +162,35 @@ All settings via `config.json` at the project root. Environment variables overri
   "defaultKvUnified": false,
   "defaultCtxCheckpoints": 0,
   "defaultCheckpointEveryTokens": -1,
+  "defaultBatchSize": 2048,
+  "defaultUbatchSize": 512,
+  "defaultThreads": 8,
+  "defaultThreadsBatch": 8,
   "detachOnShutdown": false,
   "modelsDir": "D:\\# AI Stuff\\LMStudio_Models"
 }
 ```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `host` | `0.0.0.0` | Bind address for manager and llama-server |
+| `port` | `4080` | Manager HTTP port |
+| `serverPort` | `4081` | Starting port for llama-server instances (auto-increments) |
+| `maxInstances` | `4` | Max concurrent llama-server processes |
+| `llamaServerPath` | — | Path to llama-server binary (relative to project root) |
+| `defaultCtxSize` | `8192` | Context window when `X-Model-CtxSize` not sent |
+| `defaultGpuLayers` | `99` | GPU offload layers when `X-Model-GpuLayers` not sent |
+| `flashAttention` | `true` | Flash attention default |
+| `defaultParallelSlots` | `1` | Parallel generation slots (keep at 1 for stability) |
+| `defaultKvUnified` | `false` | Unified KV cache (keep false for stability) |
+| `defaultCtxCheckpoints` | `0` | Context checkpoints count (0 = disabled) |
+| `defaultCheckpointEveryTokens` | `-1` | Checkpoint interval (-1 = disabled) |
+| `defaultBatchSize` | `2048` | Batch size for inference |
+| `defaultUbatchSize` | `512` | Micro-batch size |
+| `defaultThreads` | `8` | CPU threads for generation |
+| `defaultThreadsBatch` | `8` | CPU threads for batch processing |
+| `detachOnShutdown` | `false` | Keep llama-server alive after manager stops |
+| `modelsDir` | — | Directory to scan for `.gguf` files |
 
 The manager defaults to a conservative `llama-server` profile for stability: one slot, non-unified KV, and context checkpoints disabled unless you override them in `config.json`.
 
@@ -214,10 +251,12 @@ The `localInference` block is the **source of truth** for model config. The adap
 1. Gateway receives a request for model `badkid-llama-chat`
 2. Adapter reads `localInference` config, adds `X-Model-*` headers
 3. POSTs to `http://localhost:4080/v1/chat/completions`
-4. Manager checks if `X-Model-Path` matches the currently loaded model
-5. If not, stops current model (if any), starts new one, waits for health
-6. Proxies the request body unchanged to llama-server, streams response back
-7. Next request with same path → instant proxy, no startup delay
+4. Manager checks if `X-Model-Path` matches a running instance
+5. If already running with matching config → instant proxy, zero delay
+6. If not running → spawn new llama-server instance, wait for health (up to 120s)
+7. If running but config changed → restart instance, then proxy
+8. Proxies the request body unchanged to llama-server, streams response back
+9. Next request with same path + config → instant proxy, no startup delay
 
 ### Adding a New Local Model
 
@@ -261,19 +300,21 @@ Register-ScheduledTask -TaskName "LlamaManager" -Action $action -Trigger $trigge
 ### Monitoring
 
 ```powershell
-# Check status (includes loaded model path)
+# Check status (all instances)
 curl http://127.0.0.1:4080/status
 
-# Health check
+# Health check (all running instances)
 curl http://127.0.0.1:4080/health
 
-# Metrics (Prometheus format)
-curl http://127.0.0.1:4080/metrics
+# Metrics (Prometheus format, per-instance)
+curl http://127.0.0.1:4081/metrics
 
 # Monitor loop
 while ($true) {
     $status = Invoke-RestMethod http://127.0.0.1:4080/status
-    Write-Host "$(Get-Date) - State: $($status.state) Model: $($status.model)"
+    foreach ($inst in $status.instances) {
+        Write-Host "$(Get-Date) - $($inst.modelPath): $($inst.state) port=$($inst.port)"
+    }
     Start-Sleep -Seconds 30
 }
 ```
@@ -306,6 +347,7 @@ Get-ChildItem logs\*-gw-*.log | Sort-Object LastWriteTime -Descending | Select-O
 | Server stuck in "starting" | Check logs, verify model path exists |
 | "Cannot find module nLogger" | `git submodule update --init --recursive` |
 | Repeated `read ECONNRESET` then `llama-server exited` | Keep `defaultParallelSlots: 1`, `defaultKvUnified: false`, and checkpoints disabled |
+| Max instances reached | Stop an unused model via `/stop`, or increase `maxInstances` in config |
 
 ### Complete Reset
 
@@ -358,9 +400,9 @@ Results persist in `scripts/tune-results.json` keyed by model path. Previous res
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/models` | Scan models dir, return GGUF metadata |
-| GET | `/health` | Health check (delegates to llama-server) |
-| GET | `/status` | Process state + loaded model info |
-| POST | `/stop` | Kill the loaded model |
+| GET | `/health` | Health check (checks all running llama-server instances) |
+| GET | `/status` | List all instances with state + loaded model info |
+| POST | `/stop` | Kill all loaded models |
 | Any | `/v1/*`, `/chat/*`, etc. | Inference — reads `X-Model-*` headers, auto-starts model, proxies body |
 
 ### GET /models
@@ -370,7 +412,8 @@ Results persist in `scripts/tune-results.json` keyed by model path. Previous res
   "data": [
     {
       "name": "Qwen3.5-35B-A3B-Uncensored-Q3_K_M.gguf",
-      "path": "D:/models/Qwen3.5-35B-A3B-Uncensored-Q3_K_M.gguf",
+      "path": "HauhauCS/Qwen3.5-35B-A3B-Uncensored/Qwen3.5-35B-A3B-Uncensored-Q3_K_M.gguf",
+      "fullPath": "D:/models/HauhauCS/Qwen3.5-35B-A3B-Uncensored/Qwen3.5-35B-A3B-Uncensored-Q3_K_M.gguf",
       "type": "llm",
       "architecture": "qwen3",
       "parameter_count": 35000000000,
@@ -385,27 +428,43 @@ Results persist in `scripts/tune-results.json` keyed by model path. Previous res
 
 ```json
 {
-  "state": "running",
-  "pid": 12345,
-  "port": 4081,
-  "model": "D:/models/Qwen-35B-Q3_K_M.gguf",
-  "metrics": { "raw": "..." },
-  "detached": false
+  "instances": [
+    {
+      "modelPath": "D:/models/Qwen-35B-Q3_K_M.gguf",
+      "port": 4081,
+      "pid": 12345,
+      "state": "running",
+      "detached": false
+    }
+  ]
 }
 ```
 
-States: `idle`, `starting`, `running`, `error`
+States per instance: `idle` (not present), `starting`, `running`, `error`
+
+### GET /health
+
+```json
+{
+  "status": "ok",
+  "models": [
+    { "model": "D:/models/Qwen-35B-Q3_K_M.gguf", "port": 4081, "healthy": true }
+  ]
+}
+```
+
+Returns `503` with `status: "error"` if no models are loaded, or `status: "degraded"` if some are unhealthy.
 
 ### POST /stop
 
 ```bash
-# Normal stop
 curl -X POST http://127.0.0.1:4080/stop
+```
 
-# Force kill (ignores DETACH_ON_SHUTDOWN)
-curl -X POST http://127.0.0.1:4080/stop `
-  -H "Content-Type: application/json" `
-  -d '{"force": true}'
+Kills all running instances. Response:
+
+```json
+{ "message": "All models stopped" }
 ```
 
 ### Streaming
@@ -471,7 +530,7 @@ Progress is included in each SSE event:
 |--------|---------|
 | 200 | Success |
 | 400 | Missing `X-Model-Path` header |
-| 500 | llama-server failed to start |
+| 500 | llama-server failed to start or max instances reached |
 | 504 | Model startup timeout (>120s) |
 | 502 | llama-server crashed mid-request |
 
@@ -484,11 +543,16 @@ llama-cpp-gateway/
 ├── config.json           # Manager settings (ports, paths, defaults)
 ├── src/manager/          # Node.js management layer
 │   ├── server.js         # HTTP API, header-driven model resolution, proxy
-│   ├── process.js        # Process supervisor, model lifecycle, state.json
+│   ├── process.js        # Process supervisor, multi-instance lifecycle, state.json
 │   ├── models.js         # Model discovery & GGUF parser
 │   ├── config.js         # Reads config.json + env overrides
+│   ├── state.json        # Persisted instance state (for reattach on restart)
 │   ├── modules/nLogger/  # Logging (git submodule)
 │   └── test/             # Integration tests
+├── scripts/              # Model tuner & benchmarking
+│   ├── tune-model.js     # Interactive benchmark CLI
+│   └── tune-results.json # Stored benchmark results
+└── build/                # Build scripts for llama.cpp
 ```
 
 ---
