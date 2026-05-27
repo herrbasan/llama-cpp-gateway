@@ -71,14 +71,29 @@ function normalizeModelPath(rawPath) {
 
 function normalizeConfig(opts = {}) {
     const isEmbedding = opts.embedding ?? false;
-    const ctxSize = opts.ctxSize ?? config.defaultCtxSize;
-    const effectiveBatchSize = opts.batchSize ?? (isEmbedding ? ctxSize : config.defaultBatchSize);
-    const effectiveUbatchSize = opts.ubatchSize ?? (isEmbedding ? ctxSize : config.defaultUbatchSize);
+    const rawCtxSize = opts.ctxSize ?? config.defaultCtxSize;
+    const maxEmbeddingCtx = Number(config.embeddingMaxCtxSize) > 0
+        ? Number(config.embeddingMaxCtxSize)
+        : rawCtxSize;
+    const ctxSize = isEmbedding ? Math.min(rawCtxSize, maxEmbeddingCtx) : rawCtxSize;
+    let effectiveBatchSize = opts.batchSize ?? config.defaultBatchSize;
+    let effectiveUbatchSize = opts.ubatchSize ?? config.defaultUbatchSize;
+
+    if (isEmbedding) {
+        const cap = Math.max(1, Math.min(ctxSize, config.defaultEmbeddingBatchSize));
+        const requestedBatch = opts.batchSize ?? opts.ubatchSize ?? cap;
+        const requestedUbatch = opts.ubatchSize ?? opts.batchSize ?? cap;
+        const chosen = Math.max(1, Math.min(requestedBatch, requestedUbatch, cap, ctxSize));
+
+        // Keep embedding batch and ubatch equal to avoid known server-side instability.
+        effectiveBatchSize = chosen;
+        effectiveUbatchSize = chosen;
+    }
 
     return {
         ctxSize,
         gpuLayers: opts.gpuLayers ?? config.defaultGpuLayers,
-        flashAttention: opts.flashAttention ?? config.flashAttention,
+        flashAttention: opts.flashAttention ?? (isEmbedding ? config.defaultEmbeddingFlashAttention : config.flashAttention),
         parallelSlots: opts.parallelSlots ?? config.defaultParallelSlots,
         kvUnified: opts.kvUnified ?? config.defaultKvUnified,
         ctxCheckpoints: opts.ctxCheckpoints ?? config.defaultCtxCheckpoints,
@@ -134,7 +149,11 @@ function buildArgs(modelPath, options = {}) {
         '--checkpoint-every-n-tokens', checkpointEveryTokens.toString(),
     ];
 
-    if (flashAttention) args.push('--flash-attn', 'on');
+    if (flashAttention === true) {
+        args.push('--flash-attn', 'on');
+    } else if (flashAttention === false) {
+        args.push('--flash-attn', 'off');
+    }
     if (options.mmprojPath) args.push('--mmproj', options.mmprojPath);
     if (options.embedding) args.push('--embedding');
     if (options.pooling) args.push('--pooling', options.pooling);
@@ -254,6 +273,17 @@ async function ensureModel(modelPath, options = {}) {
     const absolutePath = normalizeModelPath(modelPath);
     const normalizedOptions = normalizeConfig(options);
     const existing = instances.get(absolutePath);
+
+    if (existing && existing.state === 'starting') {
+        const existingConfig = normalizeConfig(existing.options);
+        if (!configsMatch(existingConfig, normalizedOptions)) {
+            log.info(`Config mismatch while model is starting for ${modelPath}, restarting server...`);
+            killInstance(absolutePath, { force: true });
+        } else {
+            // Reuse the same booting instance and let caller wait until healthy.
+            return { port: existing.port, alreadyRunning: false };
+        }
+    }
 
     if (existing && existing.state === 'running') {
         const existingConfig = normalizeConfig(existing.options);

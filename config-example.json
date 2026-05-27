@@ -6,10 +6,18 @@
   "defaultCtxSize": 8192,
   "defaultGpuLayers": 99,
   "flashAttention": true,
+  "defaultEmbeddingFlashAttention": false,
   "defaultParallelSlots": 1,
   "defaultKvUnified": false,
   "defaultCtxCheckpoints": 0,
   "defaultCheckpointEveryTokens": -1,
+  "embeddingMaxConcurrency": 1,
+  "embeddingMaxRequestBytes": 2200,
+  "embeddingMaxCtxSize": 8192,
+  "defaultEmbeddingBatchSize": 256,
+  "embeddingFailureThreshold": 1,
+  "embeddingCircuitCooldownMs": 60000,
+  "embeddingCrashCooldownMs": 300000,
   "detachOnShutdown": false,
   "modelsDir": "D:\\# AI Stuff\\LMStudio_Models"
 }
