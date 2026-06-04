@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "start": "node src/manager/server.js",
-    "tune": "node scripts/tune-model.js"
+    "tune": "node scripts/tune-model.js",
+    "test:embed:concurrency": "node src/manager/test/concurrent-embeddings.js"
   }
 }
