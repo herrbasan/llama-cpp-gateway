@@ -80,10 +80,13 @@ function normalizeConfig(opts = {}) {
     let effectiveUbatchSize = opts.ubatchSize ?? config.defaultUbatchSize;
 
     if (isEmbedding) {
-        const cap = Math.max(1, Math.min(ctxSize, config.defaultEmbeddingBatchSize));
-        const requestedBatch = opts.batchSize ?? opts.ubatchSize ?? cap;
-        const requestedUbatch = opts.ubatchSize ?? opts.batchSize ?? cap;
-        const chosen = Math.max(1, Math.min(requestedBatch, requestedUbatch, cap, ctxSize));
+        // For embedding models, batch size defaults to defaultBatchSize when not explicitly provided.
+        // Physical batch size is a compute buffer limit, not a context window — values equal to
+        // ctxSize can OOM the GPU (e.g., 32000 batch × 2560 embed × 36 layers ≈ 131 GB buffers).
+        // The Gateway can explicitly set a higher batchSize via X-Model-BatchSize header if needed.
+        const requestedBatch = opts.batchSize ?? opts.ubatchSize ?? config.defaultBatchSize;
+        const requestedUbatch = opts.ubatchSize ?? opts.batchSize ?? config.defaultBatchSize;
+        const chosen = Math.max(1, Math.min(requestedBatch, requestedUbatch, ctxSize));
 
         // Keep embedding batch and ubatch equal to avoid known server-side instability.
         effectiveBatchSize = chosen;
