@@ -84,9 +84,16 @@ function normalizeConfig(opts = {}) {
         // Physical batch size is a compute buffer limit, not a context window — values equal to
         // ctxSize can OOM the GPU (e.g., 32000 batch × 2560 embed × 36 layers ≈ 131 GB buffers).
         // The Gateway can explicitly set a higher batchSize via X-Model-BatchSize header if needed.
+        // We also cap by embeddingMaxBatchSize: on Intel Arc (Vulkan), batches above ~2048 cause
+        // pinned-memory allocation to fail, forcing a 5-30 GiB host compute fallback that runs the
+        // embedding head on the CPU. See docs/embedding-pipeline-refactor-plan.md and
+        // embedding-testing/reports/findings-2-local-vs-cloud.md.
+        const maxBatch = Number(config.embeddingMaxBatchSize) > 0
+            ? Number(config.embeddingMaxBatchSize)
+            : ctxSize;
         const requestedBatch = opts.batchSize ?? opts.ubatchSize ?? config.defaultBatchSize;
         const requestedUbatch = opts.ubatchSize ?? opts.batchSize ?? config.defaultBatchSize;
-        const chosen = Math.max(1, Math.min(requestedBatch, requestedUbatch, ctxSize));
+        const chosen = Math.max(1, Math.min(requestedBatch, requestedUbatch, maxBatch, ctxSize));
 
         // Keep embedding batch and ubatch equal to avoid known server-side instability.
         effectiveBatchSize = chosen;
@@ -165,6 +172,15 @@ function buildArgs(modelPath, options = {}) {
     if (options.threads) args.push('-t', options.threads.toString());
     if (options.threadsBatch) args.push('-tb', options.threadsBatch.toString());
     if (options.mlock) args.push('--mlock');
+
+    // For embedding models on Intel Arc (Vulkan), the pinned-memory pool is
+    // smaller than the compute graph; llama-server falls back to a 30+ GiB
+    // host compute buffer that throttles inference to ~100x of GPU speed.
+    // --no-host and --op-offload force the GPU compute path. See
+    // docs/embedding-pipeline-refactor-plan.md and
+    // embedding-testing/reports/findings-2-local-vs-cloud.md.
+    if (options.embedding && config.embeddingNoHost) args.push('--no-host');
+    if (options.embedding && config.embeddingOpOffload) args.push('--op-offload');
 
     return args;
 }
